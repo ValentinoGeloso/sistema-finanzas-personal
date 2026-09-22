@@ -345,8 +345,8 @@ with tab5:
     if not df_transacciones.empty:
         st.dataframe(df_transacciones[['id', 'fecha', 'tipo', 'categoria', 'monto', 'descripcion']], use_container_width=True, hide_index=True)
         
-        # Botón para exportar a Excel (CSV)
-        csv_data = df_transacciones.to_csv(index=False).encode('utf-8')
+       # Botón para exportar a Excel / CSV legible
+        csv_data = df_transacciones.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
         st.download_button(
             label="📥 Descargar Historial Completo en Excel (CSV)",
             data=csv_data,
