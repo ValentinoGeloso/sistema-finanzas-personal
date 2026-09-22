@@ -16,7 +16,7 @@ def init_connection():
 try:
     supabase = init_connection()
 except Exception as e:
-    st.error("Error conectando a Supabase.")
+    st.error("Error conectando a Supabase. Verificá tus secretos en Streamlit Cloud.")
     st.stop()
 
 # --- FUNCIONES DE UTILIDAD ---
@@ -41,13 +41,18 @@ def ultimo_domingo():
 
 def recargar_app(mensaje="✅ Acción completada"):
     st.toast(mensaje, icon="✅")
-    time.sleep(1.5)
+    time.sleep(1.2)
     st.rerun()
 
-# --- CARGA DE DATOS ---
+# --- CARGA ROBUSTA DE DATOS (CON REINTENTOS) ---
 def cargar_tabla(nombre_tabla, order_by="id", desc=False):
-    res = supabase.table(nombre_tabla).select("*").order(order_by, desc=desc).execute()
-    return pd.DataFrame(res.data) if res.data else pd.DataFrame()
+    for intento in range(3):
+        try:
+            res = supabase.table(nombre_tabla).select("*").order(order_by, desc=desc).execute()
+            return pd.DataFrame(res.data) if res.data else pd.DataFrame()
+        except Exception:
+            time.sleep(0.5)
+    return pd.DataFrame()
 
 df_transacciones = cargar_tabla("transacciones", order_by="fecha", desc=True)
 df_categorias = cargar_tabla("categorias")
@@ -56,11 +61,13 @@ df_metas = cargar_tabla("metas_ahorro")
 df_vencimientos = cargar_tabla("vencimientos", order_by="fecha_vencimiento")
 df_deudas = cargar_tabla("deudas")
 
-# --- PROCESAMIENTO INICIAL ---
-if not df_transacciones.empty:
+# --- PROCESAMIENTO INICIAL CON RESILIENCIA ---
+if not df_transacciones.empty and 'tipo' in df_transacciones.columns and 'fecha' in df_transacciones.columns:
     df_transacciones['fecha'] = pd.to_datetime(df_transacciones['fecha']).dt.date
     df_transacciones['mes_año'] = pd.to_datetime(df_transacciones['fecha']).dt.strftime('%Y-%m')
-    df_transacciones['tipo_general'] = df_transacciones['tipo'].apply(lambda x: 'Ingreso' if 'Ingreso' in x else 'Gasto')
+    df_transacciones['tipo_general'] = df_transacciones['tipo'].apply(lambda x: 'Ingreso' if 'Ingreso' in str(x) else 'Gasto')
+else:
+    df_transacciones = pd.DataFrame(columns=['id', 'fecha', 'tipo', 'categoria', 'monto', 'descripcion', 'mes_año', 'tipo_general'])
 
 # --- ESTRUCTURA DE PESTAÑAS ---
 st.title("📈 Mi Ecosistema Financiero Pro")
@@ -78,61 +85,62 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
 # ==========================================
 with tab1:
     if df_transacciones.empty:
-        st.info("No hay datos registrados aún.")
+        st.info("No hay datos registrados aún o no se han cargado movimientos.")
     else:
         st.header("📊 Análisis Mensual")
-        meses_disponibles = sorted(df_transacciones['mes_año'].unique(), reverse=True)
-        mes_seleccionado = st.selectbox("📅 Seleccionar Mes", meses_disponibles)
-        df_mes = df_transacciones[df_transacciones['mes_año'] == mes_seleccionado]
-        
-        ingresos = df_mes[df_mes['tipo_general'] == 'Ingreso']['monto'].sum()
-        gastos = df_mes[df_mes['tipo_general'] == 'Gasto']['monto'].sum()
-        ahorro = ingresos - gastos
-        
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Ingresos Neta", f"${ingresos:,.2f}")
-        col2.metric("Gastos Totales", f"${gastos:,.2f}")
-        col3.metric("Ahorro / Inversión", f"${ahorro:,.2f}", delta=f"{(ahorro/ingresos)*100:.1f}% del ingreso" if ingresos>0 else "")
-        
-        st.markdown("---")
-        
-        col_g1, col_g2 = st.columns(2)
-        with col_g1:
-            st.subheader("Ingresos vs Gastos (Evolución)")
-            df_hist = df_transacciones.groupby(['mes_año', 'tipo_general'])['monto'].sum().reset_index()
-            fig_hist = px.bar(df_hist, x='mes_año', y='monto', color='tipo_general', barmode='group',
-                              color_discrete_map={'Ingreso': '#2ecc71', 'Gasto': '#e74c3c'})
-            st.plotly_chart(fig_hist, use_container_width=True)
+        meses_disponibles = sorted(df_transacciones['mes_año'].dropna().unique(), reverse=True)
+        if meses_disponibles:
+            mes_seleccionado = st.selectbox("📅 Seleccionar Mes", meses_disponibles)
+            df_mes = df_transacciones[df_transacciones['mes_año'] == mes_seleccionado]
             
-        with col_g2:
-            st.subheader(f"Desglose de Gastos ({mes_seleccionado})")
-            df_gastos_mes = df_mes[df_mes['tipo_general'] == 'Gasto']
-            if not df_gastos_mes.empty:
-                fig_gastos = px.pie(df_gastos_mes, names='categoria', values='monto', hole=0.4)
-                st.plotly_chart(fig_gastos, use_container_width=True)
-            else:
-                st.write("No hay gastos registrados en este mes.")
+            ingresos = df_mes[df_mes['tipo_general'] == 'Ingreso']['monto'].sum()
+            gastos = df_mes[df_mes['tipo_general'] == 'Gasto']['monto'].sum()
+            ahorro = ingresos - gastos
+            
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Ingresos Neta", f"${ingresos:,.2f}")
+            col2.metric("Gastos Totales", f"${gastos:,.2f}")
+            col3.metric("Ahorro / Inversión", f"${ahorro:,.2f}", delta=f"{(ahorro/ingresos)*100:.1f}% del ingreso" if ingresos > 0 else "")
+            
+            st.markdown("---")
+            
+            col_g1, col_g2 = st.columns(2)
+            with col_g1:
+                st.subheader("Ingresos vs Gastos (Evolución)")
+                df_hist = df_transacciones.groupby(['mes_año', 'tipo_general'])['monto'].sum().reset_index()
+                fig_hist = px.bar(df_hist, x='mes_año', y='monto', color='tipo_general', barmode='group',
+                                  color_discrete_map={'Ingreso': '#2ecc71', 'Gasto': '#e74c3c'})
+                st.plotly_chart(fig_hist, use_container_width=True)
                 
-        st.subheader(f"Desglose de Ingresos ({mes_seleccionado})")
-        df_ingresos_mes = df_mes[df_mes['tipo_general'] == 'Ingreso']
-        if not df_ingresos_mes.empty:
-            fig_ingresos = px.pie(df_ingresos_mes, names='categoria', values='monto', hole=0.4)
-            st.plotly_chart(fig_ingresos, use_container_width=True)
+            with col_g2:
+                st.subheader(f"Desglose de Gastos ({mes_seleccionado})")
+                df_gastos_mes = df_mes[df_mes['tipo_general'] == 'Gasto']
+                if not df_gastos_mes.empty:
+                    fig_gastos = px.pie(df_gastos_mes, names='categoria', values='monto', hole=0.4)
+                    st.plotly_chart(fig_gastos, use_container_width=True)
+                else:
+                    st.write("No hay gastos registrados en este mes.")
+                    
+            st.subheader(f"Desglose de Ingresos ({mes_seleccionado})")
+            df_ingresos_mes = df_mes[df_mes['tipo_general'] == 'Ingreso']
+            if not df_ingresos_mes.empty:
+                fig_ingresos = px.pie(df_ingresos_mes, names='categoria', values='monto', hole=0.4)
+                st.plotly_chart(fig_ingresos, use_container_width=True)
 
-        st.markdown("---")
-        st.header("🧮 Simulador de Rendimiento Diario (Interés Compuesto)")
-        col_s1, col_s2, col_s3 = st.columns(3)
-        with col_s1:
-            cap_inicial = st.number_input("Capital a Invertir ($)", value=float(ahorro if ahorro > 0 else 100000), step=10000.0)
-        with col_s2:
-            tna = st.number_input("TNA Actual Billetera (%)", value=38.0, step=1.0)
-        with col_s3:
-            dias_inversion = st.number_input("Días de inversión", value=30, min_value=1)
-            
-        tasa_diaria = (tna / 100) / 365
-        cap_final = cap_inicial * ((1 + tasa_diaria) ** dias_inversion)
-        ganancia = cap_final - cap_inicial
-        st.success(f"💸 **Dinero total al final:** ${cap_final:,.2f} (Ganaste **${ganancia:,.2f}** sin hacer nada)")
+            st.markdown("---")
+            st.header("🧮 Simulador de Rendimiento Diario (Interés Compuesto)")
+            col_s1, col_s2, col_s3 = st.columns(3)
+            with col_s1:
+                cap_inicial = st.number_input("Capital a Invertir ($)", value=float(ahorro if 'ahorro' in locals() and ahorro > 0 else 100000), step=10000.0)
+            with col_s2:
+                tna = st.number_input("TNA Actual Billetera (%)", value=38.0, step=1.0)
+            with col_s3:
+                dias_inversion = st.number_input("Días de inversión", value=30, min_value=1)
+                
+            tasa_diaria = (tna / 100) / 365
+            cap_final = cap_inicial * ((1 + tasa_diaria) ** dias_inversion)
+            ganancia = cap_final - cap_inicial
+            st.success(f"💸 **Dinero total al final:** ${cap_final:,.2f} (Ganaste **${ganancia:,.2f}** sin hacer nada)")
 
 # ==========================================
 # PESTAÑA 2: CARGA RÁPIDA
@@ -141,7 +149,7 @@ with tab2:
     st.header("📝 Movimiento Único")
     tipo_mov = st.selectbox("Tipo", ["Ingreso Variable", "Ingreso Fijo", "Gasto Variable", "Gasto Fijo"])
     tipo_general = "Ingreso" if "Ingreso" in tipo_mov else "Gasto"
-    opciones_cat = df_categorias[df_categorias['tipo_general'] == tipo_general]['nombre'].tolist() if not df_categorias.empty else ["Sin categorías"]
+    opciones_cat = df_categorias[df_categorias['tipo_general'] == tipo_general]['nombre'].tolist() if not df_categorias.empty and 'tipo_general' in df_categorias.columns else ["Sin categorías"]
     
     cat_mov = st.selectbox("Categoría", opciones_cat)
     monto_mov = st.number_input("Monto ($)", min_value=0.0, step=1000.0)
@@ -149,9 +157,15 @@ with tab2:
     desc_mov = st.text_input("Descripción (Ej: Nafta, Coto...)")
     
     if st.button("Guardar Movimiento", type="primary"):
-        nuevo = {"fecha": str(fecha_mov), "tipo": tipo_mov, "categoria": cat_mov, "monto": monto_mov, "descripcion": desc_mov}
-        supabase.table("transacciones").insert(nuevo).execute()
-        recargar_app("Movimiento guardado.")
+        if monto_mov > 0:
+            try:
+                nuevo = {"fecha": str(fecha_mov), "tipo": tipo_mov, "categoria": cat_mov, "monto": monto_mov, "descripcion": desc_mov}
+                supabase.table("transacciones").insert(nuevo).execute()
+                recargar_app("Movimiento guardado.")
+            except Exception as e:
+                st.error("Error de conexión al guardar el movimiento. Intentá de nuevo.")
+        else:
+            st.warning("El monto debe ser mayor a 0.")
 
 # ==========================================
 # PESTAÑA 3: AUTOMATIZACIONES LABORALES
@@ -169,14 +183,20 @@ with tab3:
             d_partido_aaa = st.text_input("Detalle (Ej: Cat. Juveniles Cancha 2)")
             
             if st.button("Guardar Partido"):
-                supabase.table("partidos_aaa").insert({
-                    "fecha": str(f_partido_aaa), "detalle": d_partido_aaa, "monto": m_partido_aaa, "estado": "Pendiente"
-                }).execute()
-                recargar_app("Partido guardado en pendientes.")
+                if m_partido_aaa > 0:
+                    try:
+                        supabase.table("partidos_aaa").insert({
+                            "fecha": str(f_partido_aaa), "detalle": d_partido_aaa, "monto": m_partido_aaa, "estado": "Pendiente"
+                        }).execute()
+                        recargar_app("Partido guardado en pendientes.")
+                    except Exception as e:
+                        st.error("Error de red al guardar el partido. Intentá nuevamente.")
+                else:
+                    st.warning("El monto debe ser mayor a 0.")
                 
         with col_aaa2:
             st.subheader("2. Liquidación / Cierre de Caja")
-            if not df_partidos_aaa.empty:
+            if not df_partidos_aaa.empty and 'estado' in df_partidos_aaa.columns:
                 df_pend = df_partidos_aaa[df_partidos_aaa['estado'] == 'Pendiente'].copy()
                 if not df_pend.empty:
                     st.write("Seleccioná partidos a cobrar (destildá si hubo cierre anticipado).")
@@ -199,21 +219,29 @@ with tab3:
                     fecha_proyectada = primer_viernes_mes_siguiente(date.today())
                     fecha_cobro_final = st.date_input("Fecha de cobro real", value=fecha_proyectada)
                     
-                    if st.button("Generar Liquidación Mensual AAA", type="primary") and neto_calculado > 0:
-                        supabase.table("transacciones").insert({
-                            "fecha": str(fecha_cobro_final), "tipo": "Ingreso Variable", "categoria": "Arbitraje",
-                            "monto": neto_calculado, "descripcion": f"Liquidación AAA ({len(seleccionados)} partidos)"
-                        }).execute()
-                        for p_id in seleccionados['id'].tolist():
-                            supabase.table("partidos_aaa").update({"estado": "Cobrado"}).eq("id", p_id).execute()
-                        recargar_app(f"Liquidación agendada para el {fecha_cobro_final}.")
+                    if st.button("Generar Liquidación Mensual AAA", type="primary"):
+                        if neto_calculado > 0:
+                            try:
+                                supabase.table("transacciones").insert({
+                                    "fecha": str(fecha_cobro_final), "tipo": "Ingreso Variable", "categoria": "Arbitraje",
+                                    "monto": neto_calculado, "descripcion": f"Liquidación AAA ({len(seleccionados)} partidos)"
+                                }).execute()
+                                for p_id in seleccionados['id'].tolist():
+                                    supabase.table("partidos_aaa").update({"estado": "Cobrado"}).eq("id", p_id).execute()
+                                recargar_app(f"Liquidación agendada para el {fecha_cobro_final}.")
+                            except Exception as e:
+                                st.error("Error al procesar la liquidación en Supabase. Intentá de nuevo.")
+                        else:
+                            st.warning("El neto calculated debe ser mayor a 0.")
                 else:
                     st.info("No tenés partidos pendientes de cobrar.")
+            else:
+                st.info("No hay registro de partidos guardados.")
 
     elif "Argenliga" in modo_trabajo:
         st.subheader("Cobro Inmediato Argenliga (con Retención 5%)")
         fecha_arg = st.date_input("Fecha del partido", value=ultimo_domingo())
-        monto_mano = st.number_input("Total cobrado en mano ($)", step=1000.0)
+        monto_mano = st.number_input("Total cobrado en mano ($)", min_value=0.0, step=1000.0)
         
         descuento_arg = monto_mano * 0.05
         neto_arg = monto_mano - descuento_arg
@@ -224,12 +252,18 @@ with tab3:
         
         desc_arg = st.text_input("Nota (Opcional)", placeholder="Ej: 2 partidos cancha 3")
         
-        if st.button("Registrar Argenliga", type="primary") and neto_arg > 0:
-            supabase.table("transacciones").insert({
-                "fecha": str(fecha_arg), "tipo": "Ingreso Variable", "categoria": "Arbitraje",
-                "monto": neto_arg, "descripcion": f"Argenliga: {desc_arg} (Mano: {monto_mano} - 5% retención)"
-            }).execute()
-            recargar_app("Ingreso Argenliga registrado correctamente.")
+        if st.button("Registrar Argenliga", type="primary"):
+            if neto_arg > 0:
+                try:
+                    supabase.table("transacciones").insert({
+                        "fecha": str(fecha_arg), "tipo": "Ingreso Variable", "categoria": "Arbitraje",
+                        "monto": neto_arg, "descripcion": f"Argenliga: {desc_arg} (Mano: {monto_mano} - 5% retención)"
+                    }).execute()
+                    recargar_app("Ingreso Argenliga registrado correctamente.")
+                except Exception as e:
+                    st.error("Error de conexión al registrar Argenliga.")
+            else:
+                st.warning("El monto ingresado debe ser mayor a 0.")
 
     elif "Consultorio" in modo_trabajo:
         st.subheader("Generador de Turnos (Martes y Viernes)")
@@ -255,15 +289,19 @@ with tab3:
         if 'turnos_cons' in st.session_state:
             df_editado = st.data_editor(st.session_state['turnos_cons'], num_rows="dynamic", use_container_width=True)
             if st.button("💾 Guardar Planilla Mensual", type="primary"):
-                datos_a_insertar = []
-                for _, row in df_editado.iterrows():
-                    datos_a_insertar.append({
-                        "fecha": row['Fecha'], "tipo": "Ingreso Fijo", "categoria": row['Categoría'],
-                        "monto": row['Monto'], "descripcion": row['Descripción']
-                    })
-                supabase.table("transacciones").insert(datos_a_insertar).execute()
-                del st.session_state['turnos_cons']
-                recargar_app("Turnos guardados.")
+                try:
+                    datos_a_insertar = []
+                    for _, row in df_editado.iterrows():
+                        datos_a_insertar.append({
+                            "fecha": row['Fecha'], "tipo": "Ingreso Fijo", "categoria": row['Categoría'],
+                            "monto": row['Monto'], "descripcion": row['Descripción']
+                        })
+                    if datos_a_insertar:
+                        supabase.table("transacciones").insert(datos_a_insertar).execute()
+                        del st.session_state['turnos_cons']
+                        recargar_app("Turnos guardados.")
+                except Exception as e:
+                    st.error("Error al guardar la planilla de turnos en Supabase.")
 
 # ==========================================
 # PESTAÑA 4: METAS, VENCIMIENTOS Y DEUDAS
@@ -280,14 +318,20 @@ with tab4:
             obj_meta = st.number_input("Monto Objetivo ($)", min_value=1000.0, step=10000.0)
             act_meta = st.number_input("Monto Actual Ahorrado ($)", min_value=0.0, step=1000.0)
             if st.button("Guardar Meta"):
-                supabase.table("metas_ahorro").insert({"nombre": n_meta, "monto_objetivo": obj_meta, "monto_actual": act_meta}).execute()
-                recargar_app("Meta creada con éxito.")
+                if n_meta:
+                    try:
+                        supabase.table("metas_ahorro").insert({"nombre": n_meta, "monto_objetivo": obj_meta, "monto_actual": act_meta}).execute()
+                        recargar_app("Meta creada con éxito.")
+                    except Exception as e:
+                        st.error("Error al guardar la meta.")
+                else:
+                    st.warning("Ingresá un nombre para la meta.")
                 
         with col_m2:
             st.subheader("Progreso de tus Metas")
-            if not df_metas.empty:
+            if not df_metas.empty and 'monto_actual' in df_metas.columns:
                 for _, row in df_metas.iterrows():
-                    porc = min(row['monto_actual'] / row['monto_objetivo'], 1.0)
+                    porc = min(row['monto_actual'] / row['monto_objetivo'], 1.0) if row['monto_objetivo'] > 0 else 0
                     st.write(f"**{row['nombre']}**: ${row['monto_actual']:,.0f} / ${row['monto_objetivo']:,.0f}")
                     st.progress(porc)
             else:
@@ -299,24 +343,33 @@ with tab4:
             st.subheader("Nuevo Vencimiento")
             con_v = st.text_input("Concepto (Ej: Patente Corsa, VTV, Seguro)")
             f_v = st.date_input("Fecha de Vencimiento", value=datetime.today())
-            m_v = st.number_input("Monto estimado ($)", step=1000.0)
+            m_v = st.number_input("Monto estimado ($)", min_value=0.0, step=1000.0)
             if st.button("Registrar Vencimiento"):
-                supabase.table("vencimientos").insert({"concepto": con_v, "fecha_vencimiento": str(f_v), "monto": m_v, "estado": "Pendiente"}).execute()
-                recargar_app("Vencimiento registrado.")
+                if con_v:
+                    try:
+                        supabase.table("vencimientos").insert({"concepto": con_v, "fecha_vencimiento": str(f_v), "monto": m_v, "estado": "Pendiente"}).execute()
+                        recargar_app("Vencimiento registrado.")
+                    except Exception as e:
+                        st.error("Error al guardar el vencimiento.")
+                else:
+                    st.warning("Ingresá un concepto.")
                 
         with col_v2:
             st.subheader("Próximos Vencimientos")
-            if not df_vencimientos.empty:
+            if not df_vencimientos.empty and 'fecha_vencimiento' in df_vencimientos.columns:
                 for _, row in df_vencimientos.iterrows():
-                    f_venc = datetime.strptime(row['fecha_vencimiento'], "%Y-%m-%d").date()
-                    dias_restantes = (f_venc - date.today()).days
-                    
-                    if dias_restantes < 0:
-                        st.error(f"🛑 **{row['concepto']}** venció hace {abs(dias_restantes)} días (${row['monto']:,.0f})")
-                    elif dias_restantes <= 7:
-                        st.warning(f"⚠️ **{row['concepto']}** vence en {dias_restantes} días ({row['fecha_vencimiento']}) - ${row['monto']:,.0f}")
-                    else:
-                        st.success(f"✅ **{row['concepto']}** vence el {row['fecha_vencimiento']} (${row['monto']:,.0f})")
+                    try:
+                        f_venc = datetime.strptime(str(row['fecha_vencimiento']), "%Y-%m-%d").date()
+                        dias_restantes = (f_venc - date.today()).days
+                        
+                        if dias_restantes < 0:
+                            st.error(f"🛑 **{row['concepto']}** venció hace {abs(dias_restantes)} días (${row['monto']:,.0f})")
+                        elif dias_restantes <= 7:
+                            st.warning(f"⚠️ **{row['concepto']}** vence en {dias_restantes} días ({row['fecha_vencimiento']}) - ${row['monto']:,.0f}")
+                        else:
+                            st.success(f"✅ **{row['concepto']}** vence el {row['fecha_vencimiento']} (${row['monto']:,.0f})")
+                    except Exception:
+                        pass
             else:
                 st.info("No hay vencimientos cargados.")
 
@@ -326,24 +379,35 @@ with tab4:
             st.subheader("Registrar Cuenta Corriente")
             pers = st.text_input("Persona / Entidad")
             t_deuda = st.selectbox("Tipo", ["Me deben", "Debo"])
-            m_deuda = st.number_input("Monto ($)", step=1000.0)
+            m_deuda = st.number_input("Monto ($)", min_value=0.0, step=1000.0)
             det_deuda = st.text_input("Detalle (Ej: Entrada de cine, comida)")
             if st.button("Guardar Cuenta Corriente"):
-                supabase.table("deudas").insert({"persona": pers, "tipo": t_deuda, "monto": m_deuda, "detalle": det_deuda, "estado": "Pendiente"}).execute()
-                recargar_app("Registrado correctamente.")
+                if pers and m_deuda > 0:
+                    try:
+                        supabase.table("deudas").insert({"persona": pers, "tipo": t_deuda, "monto": m_deuda, "detalle": det_deuda, "estado": "Pendiente"}).execute()
+                        recargar_app("Registrado correctamente.")
+                    except Exception as e:
+                        st.error("Error al guardar la deuda.")
+                else:
+                    st.warning("Completá el nombre de la persona y un monto mayor a 0.")
                 
         with col_d2:
             st.subheader("Estado de Cuentas")
-            if not df_deudas.empty:
+            if not df_deudas.empty and 'estado' in df_deudas.columns:
                 df_d_pend = df_deudas[df_deudas['estado'] == 'Pendiente']
                 if not df_d_pend.empty:
-                    st.dataframe(df_d_pend[['persona', 'tipo', 'monto', 'detalle']], use_container_width=True, hide_index=True)
+                    st.dataframe(df_d_pend[['id', 'persona', 'tipo', 'monto', 'detalle']], use_container_width=True, hide_index=True)
                     id_pago = st.number_input("ID de la deuda saldada", min_value=0, step=1)
                     if st.button("Marcar como Saldado / Cobrado"):
-                        supabase.table("deudas").update({"estado": "Saldado"}).eq("id", id_pago).execute()
-                        recargar_app("Actualizado.")
+                        try:
+                            supabase.table("deudas").update({"estado": "Saldado"}).eq("id", id_pago).execute()
+                            recargar_app("Actualizado.")
+                        except Exception as e:
+                            st.error("Error al actualizar la deuda.")
                 else:
                     st.info("No hay deudas pendientes.")
+            else:
+                st.info("No hay deudas cargadas.")
 
 # ==========================================
 # PESTAÑA 5: HISTORIAL Y EXCEL
@@ -365,11 +429,16 @@ with tab5:
         st.markdown("---")
         id_borrar = st.number_input("ID del movimiento a borrar por error", min_value=0, step=1)
         if st.button("🗑️ Borrar Movimiento"):
-            if id_borrar in df_transacciones['id'].values:
-                supabase.table("transacciones").delete().eq("id", id_borrar).execute()
-                recargar_app(f"Movimiento {id_borrar} borrado.")
+            if 'id' in df_transacciones.columns and id_borrar in df_transacciones['id'].values:
+                try:
+                    supabase.table("transacciones").delete().eq("id", id_borrar).execute()
+                    recargar_app(f"Movimiento {id_borrar} borrado.")
+                except Exception as e:
+                    st.error("Error al borrar el movimiento.")
             else:
                 st.error("ID no encontrado.")
+    else:
+        st.info("No hay historial disponible.")
 
 # ==========================================
 # PESTAÑA 6: CONFIGURACIÓN
@@ -380,5 +449,11 @@ with tab6:
         nuevo_t = st.selectbox("Tipo", ["Gasto", "Ingreso"])
         nuevo_n = st.text_input("Nombre")
         if st.button("Agregar Categoría"):
-            supabase.table("categorias").insert({"tipo_general": nuevo_t, "nombre": nuevo_n}).execute()
-            recargar_app("Categoría agregada.")
+            if nuevo_n:
+                try:
+                    supabase.table("categorias").insert({"tipo_general": nuevo_t, "nombre": nuevo_n}).execute()
+                    recargar_app("Categoría agregada.")
+                except Exception as e:
+                    st.error("Error al agregar categoría.")
+            else:
+                st.warning("Escribí el nombre de la categoría.")
