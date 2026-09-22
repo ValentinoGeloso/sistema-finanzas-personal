@@ -177,7 +177,7 @@ def obtener_recurrentes_para_mes(año, mes):
   return pd.DataFrame(recurrentes_validos)
 
 
-# --- CÁLCULO DE PRÓXIMO VENCIMIENTO NO PAGADO DE FIJOS ---
+# --- CÁLCULO DE PRÓXIMO VENCIMIENTO DE FIJOS ---
 def calcular_vencimientos_fijos(hoy=None):
   if hoy is None:
     hoy = date.today()
@@ -185,17 +185,15 @@ def calcular_vencimientos_fijos(hoy=None):
   if df_recurrentes.empty:
     return []
 
-  vencimientos_proximos = []
+  vencimientos_info = []
   gastos_fijos = (
-      df_recurrentes[df_recurrentes["tipo"] == "Gasto Fijo"]
+      df_recurrentes[df_recurrentes["tipo"].str.contains("Gasto", na=False)]
       if "tipo" in df_recurrentes.columns
       else df_recurrentes
   )
 
   for _, row in gastos_fijos.iterrows():
-    dia_m = (
-        int(row.get("dia_mes", 1)) if pd.notna(row.get("dia_mes")) else 1
-    )
+    dia_m = int(row.get("dia_mes", 1)) if pd.notna(row.get("dia_mes")) else 1
     cat = str(row["categoria"])
     monto = float(row["monto"])
     desc = str(row.get("descripcion", ""))
@@ -212,53 +210,67 @@ def calcular_vencimientos_fijos(hoy=None):
         else None
     )
 
-    cur_year = max(hoy.year, f_ini.year)
-    cur_month = (
-        max(hoy.month, f_ini.month) if cur_year == f_ini.year else hoy.month
-    )
+    cur_year = hoy.year
+    cur_month = hoy.month
 
-    # Buscar el primer mes pendiente
-    for _ in range(24):
-      max_days = calendar.monthrange(cur_year, cur_month)[1]
-      due_date = date(cur_year, cur_month, min(dia_m, max_days))
+    max_days = calendar.monthrange(cur_year, cur_month)[1]
+    due_date_curr = date(cur_year, cur_month, min(dia_m, max_days))
 
-      if f_fin and due_date > f_fin:
-        break
-
-      mes_str = f"{cur_year}-{cur_month:02d}"
-
-      ya_pagado = False
-      if not df_transacciones.empty and "mes_año" in df_transacciones.columns:
-        df_pagado = df_transacciones[
-            (df_transacciones["mes_año"] == mes_str)
-            & (df_transacciones["categoria"] == cat)
-            & (df_transacciones["tipo_general"] == "Gasto")
-        ]
-        if not df_pagado.empty:
-          ya_pagado = True
-
-      if not ya_pagado:
-        dias_restantes = (due_date - hoy).days
-        if dias_restantes <= 31:  # Faltan menos de un mes o ya venció
-          vencimientos_proximos.append({
-              "id_recurrente": id_rec,
-              "categoria": cat,
-              "monto": monto,
-              "fecha_vencimiento": due_date,
-              "dias_restantes": dias_restantes,
-              "descripcion": desc,
-              "mes_año": mes_str,
-          })
-        break
-
-      if cur_month == 12:
-        cur_year += 1
-        cur_month = 1
+    # Verificar si el fijo ya estaba activo en el mes actual
+    if due_date_curr < f_ini or (f_fin and due_date_curr > f_fin):
+      if due_date_curr < f_ini:
+        cur_year = f_ini.year
+        cur_month = f_ini.month
+        max_days = calendar.monthrange(cur_year, cur_month)[1]
+        due_date_curr = date(cur_year, cur_month, min(dia_m, max_days))
       else:
-        cur_month += 1
+        continue
 
-  vencimientos_proximos.sort(key=lambda x: x["fecha_vencimiento"])
-  return vencimientos_proximos
+    mes_str_curr = f"{cur_year}-{cur_month:02d}"
+
+    pagado_este_mes = False
+    if not df_transacciones.empty and "mes_año" in df_transacciones.columns:
+      df_pagado = df_transacciones[
+          (df_transacciones["mes_año"] == mes_str_curr)
+          & (df_transacciones["categoria"] == cat)
+          & (df_transacciones["tipo_general"] == "Gasto")
+      ]
+      if not df_pagado.empty:
+        pagado_este_mes = True
+
+    if not pagado_este_mes:
+      dias_restantes = (due_date_curr - hoy).days
+      vencimientos_info.append({
+          "id_recurrente": id_rec,
+          "categoria": cat,
+          "monto": monto,
+          "fecha_vencimiento": due_date_curr,
+          "dias_restantes": dias_restantes,
+          "descripcion": desc,
+          "mes_año": mes_str_curr,
+          "estado_pago": "Pendiente",
+      })
+    else:
+      next_year = cur_year + 1 if cur_month == 12 else cur_year
+      next_month = 1 if cur_month == 12 else cur_month + 1
+      max_days_next = calendar.monthrange(next_year, next_month)[1]
+      due_date_next = date(next_year, next_month, min(dia_m, max_days_next))
+      mes_str_next = f"{next_year}-{next_month:02d}"
+      dias_restantes = (due_date_next - hoy).days
+
+      vencimientos_info.append({
+          "id_recurrente": id_rec,
+          "categoria": cat,
+          "monto": monto,
+          "fecha_vencimiento": due_date_next,
+          "dias_restantes": dias_restantes,
+          "descripcion": desc,
+          "mes_año": mes_str_next,
+          "estado_pago": "Pagado este mes",
+      })
+
+  vencimientos_info.sort(key=lambda x: x["fecha_vencimiento"])
+  return vencimientos_info
 
 
 lista_todas_categorias = (
@@ -270,8 +282,8 @@ lista_todas_categorias = (
 # --- ESTRUCTURA DE PESTAÑAS ---
 st.title("📈 Mi Ecosistema Financiero Pro")
 st.caption(
-    "💡 *Tus **Ingresos y Gastos Fijos** se proyectan en todos los meses"
-    " futuros y actualizan tus vencimientos dinámicamente.*"
+    "💡 *Tus **Ingresos y Gastos Fijos** se proyectan automáticamente en todos"
+    " los meses futuros y alimentan tus vencimientos.*"
 )
 
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
@@ -448,73 +460,140 @@ with tab1:
   )
 
 # ==========================================
-# PESTAÑA 2: CARGA RÁPIDA (INTEGRADA A FIJOS Y VENCIMIENTOS)
+# PESTAÑA 2: CARGA RÁPIDA (SEPARADA Y CLARA)
 # ==========================================
 with tab2:
-  st.header("📝 Movimiento Único Puntual")
-  tipo_mov = st.selectbox(
-      "Tipo",
-      ["Ingreso Variable", "Ingreso Fijo", "Gasto Variable", "Gasto Fijo"],
-      key="tab2_tipo_mov",
-  )
-  tipo_general = "Ingreso" if "Ingreso" in tipo_mov else "Gasto"
-  opciones_cat = (
-      df_categorias[df_categorias["tipo_general"] == tipo_general][
-          "nombre"
-      ].tolist()
-      if not df_categorias.empty and "tipo_general" in df_categorias.columns
-      else ["Sin categorías"]
+  st.header("📝 Carga Rápida de Operaciones")
+
+  sub_tab2 = st.radio(
+      "¿Qué querés cargar?",
+      [
+          "💸 Registrar Pago / Movimiento Puntual",
+          "📅 Configurar Nuevo Gasto / Ingreso Fijo Recurrente",
+      ],
+      horizontal=True,
+      key="tab2_sub_option",
   )
 
-  cat_mov = st.selectbox("Categoría", opciones_cat, key="tab2_cat_mov")
-  monto_mov = st.number_input(
-      "Monto ($)", min_value=0.0, step=1000.0, key="tab2_monto_mov"
-  )
-  fecha_mov = st.date_input(
-      "Fecha de Cobro / Pago Efectivo", datetime.today(), key="tab2_fecha_mov"
-  )
-  desc_mov = st.text_input(
-      "Descripción (Ej: Nafta, Coto...)", key="tab2_desc_mov"
-  )
+  # -----------------------------------------------
+  # OPCIÓN A: REGISTRAR UN PAGO / MOVIMIENTO PUNTUAL
+  # -----------------------------------------------
+  if "Pago / Movimiento Puntual" in sub_tab2:
+    st.subheader("💸 Registrar Transacción Realizada")
+    st.caption("Guarda el movimiento efectuado en la fecha seleccionada.")
 
-  if st.button("Guardar Movimiento", type="primary", key="tab2_btn_guardar"):
-    if monto_mov > 0:
-      try:
-        # 1. Guardar en transacciones reales
-        nuevo = {
-            "fecha": str(fecha_mov),
-            "tipo": tipo_mov,
-            "categoria": cat_mov,
-            "monto": monto_mov,
-            "descripcion": desc_mov,
-        }
-        supabase.table("transacciones").insert(nuevo).execute()
+    tipo_mov = st.selectbox(
+        "Tipo de Movimiento",
+        [
+            "Gasto Variable",
+            "Ingreso Variable",
+            "Gasto Fijo (Pago del mes)",
+            "Ingreso Fijo (Cobro del mes)",
+        ],
+        key="tab2_tipo_mov",
+    )
+    tipo_general = "Ingreso" if "Ingreso" in tipo_mov else "Gasto"
+    opciones_cat = (
+        df_categorias[df_categorias["tipo_general"] == tipo_general][
+            "nombre"
+        ].tolist()
+        if not df_categorias.empty and "tipo_general" in df_categorias.columns
+        else ["Sin categorías"]
+    )
 
-        # 2. Si se marcó como Fijo, asegurar que exista en la plantilla de recurrentes
-        if "Fijo" in tipo_mov:
-          existe_rec = False
-          if not df_recurrentes.empty and "categoria" in df_recurrentes.columns:
-            existe_rec = not df_recurrentes[
-                df_recurrentes["categoria"] == cat_mov
-            ].empty
+    cat_mov = st.selectbox("Categoría", opciones_cat, key="tab2_cat_mov")
+    monto_mov = st.number_input(
+        "Monto ($)", min_value=0.0, step=1000.0, key="tab2_monto_mov"
+    )
+    fecha_mov = st.date_input(
+        "Fecha Efectiva", datetime.today(), key="tab2_fecha_mov"
+    )
+    desc_mov = st.text_input(
+        "Descripción (Ej: Nafta, Coto, Pago Luz...)", key="tab2_desc_mov"
+    )
 
-          if not existe_rec:
-            supabase.table("recurrentes").insert({
-                "tipo": tipo_mov,
-                "categoria": cat_mov,
-                "monto": monto_mov,
-                "dia_mes": fecha_mov.day,
-                "fecha_inicio": str(fecha_mov),
-                "descripcion": (
-                    desc_mov if desc_mov else f"{tipo_mov} {cat_mov}"
-                ),
-            }).execute()
+    if st.button("Guardar Movimiento", type="primary", key="tab2_btn_guardar"):
+      if monto_mov > 0:
+        try:
+          supabase.table("transacciones").insert({
+              "fecha": str(fecha_mov),
+              "tipo": tipo_mov,
+              "categoria": cat_mov,
+              "monto": monto_mov,
+              "descripcion": desc_mov,
+          }).execute()
+          recargar_app("Movimiento registrado en el historial.")
+        except Exception as e:
+          st.error(f"Error al guardar movimiento: {e}")
+      else:
+        st.warning("El monto debe ser mayor a 0.")
 
-        recargar_app("Movimiento guardado y registrado correctamente.")
-      except Exception as e:
-        st.error(f"Error al guardar movimiento: {e}")
-    else:
-      st.warning("El monto debe ser mayor a 0.")
+  # -----------------------------------------------
+  # OPCIÓN B: CONFIGURAR REGULA FIJA RECURRENTE
+  # -----------------------------------------------
+  else:
+    st.subheader("📅 Configurar Regla Fija Recurrente (Para Todos los Meses)")
+    st.caption(
+        "Esta carga **NO marca el pago como hecho**, sino que establece el día"
+        " de vencimiento para que se proyecte en todos los meses y te avise en"
+        " Vencimientos."
+    )
+
+    r_tipo = st.selectbox(
+        "Tipo de Fijo",
+        ["Gasto Fijo", "Ingreso Fijo"],
+        key="tab2_r_tipo",
+    )
+    tipo_gen_r = "Ingreso" if "Ingreso" in r_tipo else "Gasto"
+    opciones_cat_r = (
+        df_categorias[df_categorias["tipo_general"] == tipo_gen_r][
+            "nombre"
+        ].tolist()
+        if not df_categorias.empty and "tipo_general" in df_categorias.columns
+        else ["Sin categorías"]
+    )
+
+    r_cat = st.selectbox("Categoría", opciones_cat_r, key="tab2_r_cat")
+    r_monto = st.number_input(
+        "Monto ($)", min_value=0.0, step=1000.0, key="tab2_r_monto"
+    )
+    r_dia = st.number_input(
+        "Día del mes en que vence / se cobra (1 a 31)",
+        min_value=1,
+        max_value=31,
+        value=10,
+        key="tab2_r_dia",
+    )
+    r_fecha_ini = st.date_input(
+        "Aplica a partir de", value=date.today(), key="tab2_r_fecha_ini"
+    )
+    r_desc = st.text_input(
+        "Descripción (Ej: Alquiler, Internet, Gimnasio)", key="tab2_r_desc"
+    )
+
+    if st.button(
+        "⚙️ Crear Regla Fija Recurrente",
+        type="primary",
+        key="tab2_btn_guardar_rec",
+    ):
+      if r_monto > 0:
+        try:
+          supabase.table("recurrentes").insert({
+              "tipo": r_tipo,
+              "categoria": r_cat,
+              "monto": r_monto,
+              "dia_mes": r_dia,
+              "fecha_inicio": str(r_fecha_ini),
+              "descripcion": r_desc,
+          }).execute()
+          recargar_app(
+              f"Gasto/Ingreso fijo configurado para repetirse los días {r_dia}"
+              " de cada mes."
+          )
+        except Exception as e:
+          st.error(f"Error al crear regla fija: {e}")
+      else:
+        st.warning("El monto debe ser mayor a 0.")
 
 # ==========================================
 # PESTAÑA 3: AUTOMATIZACIONES LABORALES
@@ -802,7 +881,7 @@ with tab4:
   )
 
   # ------------------------------------
-  # 1. VENCIMIENTOS DINÁMICOS
+  # 1. VENCIMIENTOS DINÁMICOS Y TRANSPARENTES
   # ------------------------------------
   if "Vencimientos" in sub_t4:
     col_v1, col_v2 = st.columns([1, 1.8])
@@ -833,61 +912,68 @@ with tab4:
           st.warning("Ingresá un concepto.")
 
     with col_v2:
-      st.subheader("🔔 Próximos Vencimientos de Gastos Fijos")
-      st.caption(
-          "💡 Muestra el próximo período sin pagar (si faltan menos de un mes)."
-          " Al pagarlo, rota automáticamente al mes siguiente."
-      )
+      st.subheader("🔔 Estado de Vencimientos de Gastos Fijos")
+      fijos_info = calcular_vencimientos_fijos()
 
-      fijos_pendientes = calcular_vencimientos_fijos()
-
-      if fijos_pendientes:
-        for item in fijos_pendientes:
+      if fijos_info:
+        for item in fijos_info:
           col_item1, col_item2 = st.columns([3, 1])
           dias = item["dias_restantes"]
           fecha_fmt = item["fecha_vencimiento"].strftime("%d/%m/%Y")
+          estado_pago = item["estado_pago"]
 
           with col_item1:
-            if dias < 0:
-              st.error(
-                  f"🛑 **{item['categoria']}** ({item['descripcion']}): Venció"
-                  f" hace {abs(dias)} días ({fecha_fmt}) - ${item['monto']:,.0f}"
-              )
-            elif dias <= 7:
-              st.warning(
-                  f"⚠️ **{item['categoria']}** ({item['descripcion']}): Vence"
-                  f" en {dias} días ({fecha_fmt}) - ${item['monto']:,.0f}"
-              )
+            if estado_pago == "Pendiente":
+              if dias < 0:
+                st.error(
+                    f"🛑 **{item['categoria']}** ({item['descripcion']}):"
+                    f" **PENDIENTE** - Venció hace {abs(dias)} días ({fecha_fmt})"
+                    f" - ${item['monto']:,.0f}"
+                )
+              elif dias <= 7:
+                st.warning(
+                    f"⚠️ **{item['categoria']}** ({item['descripcion']}):"
+                    f" **PENDIENTE** - Vence en {dias} días ({fecha_fmt}) -"
+                    f" ${item['monto']:,.0f}"
+                )
+              else:
+                st.info(
+                    f"📅 **{item['categoria']}** ({item['descripcion']}):"
+                    f" **PENDIENTE** - Vence el {fecha_fmt} (en {dias} días) -"
+                    f" ${item['monto']:,.0f}"
+                )
             else:
-              st.info(
-                  f"✅ **{item['categoria']}** ({item['descripcion']}): Próximo"
-                  f" vencimiento el {fecha_fmt} - ${item['monto']:,.0f}"
+              st.success(
+                  f"✅ **{item['categoria']}** ({item['descripcion']}):"
+                  f" **PAGADO ESTE MES**. Próximo vencimiento: {fecha_fmt} (en"
+                  f" {dias} días) - ${item['monto']:,.0f}"
               )
 
           with col_item2:
-            if st.button(
-                "💳 Marcar Pagado",
-                key=f"pay_rec_{item['id_recurrente']}_{item['mes_año']}",
-            ):
-              try:
-                supabase.table("transacciones").insert({
-                    "fecha": str(item["fecha_vencimiento"]),
-                    "tipo": "Gasto Fijo",
-                    "categoria": item["categoria"],
-                    "monto": item["monto"],
-                    "descripcion": (
-                        f"Pago Fijo Vencimiento {item['mes_año']} -"
-                        f" {item['descripcion']}"
-                    ),
-                }).execute()
-                recargar_app(
-                    f"Pago de {item['categoria']} registrado para"
-                    f" {item['mes_año']}."
-                )
-              except Exception as e:
-                st.error(f"Error al registrar pago: {e}")
+            if estado_pago == "Pendiente":
+              if st.button(
+                  "💳 Marcar Pagado",
+                  key=f"pay_rec_{item['id_recurrente']}_{item['mes_año']}",
+              ):
+                try:
+                  supabase.table("transacciones").insert({
+                      "fecha": str(item["fecha_vencimiento"]),
+                      "tipo": "Gasto Fijo",
+                      "categoria": item["categoria"],
+                      "monto": item["monto"],
+                      "descripcion": (
+                          f"Pago Fijo {item['mes_año']} -"
+                          f" {item['descripcion']}"
+                      ),
+                  }).execute()
+                  recargar_app(
+                      f"Pago de {item['categoria']} registrado para"
+                      f" {item['mes_año']}."
+                  )
+                except Exception as e:
+                  st.error(f"Error al registrar pago: {e}")
       else:
-        st.success("🎉 ¡No tenés gastos fijos pendientes para este mes!")
+        st.info("No hay gastos fijos configurados.")
 
       st.markdown("---")
       st.markdown("##### **Vencimientos Eventuales Registrados:**")
@@ -1234,139 +1320,87 @@ with tab5:
 with tab6:
   st.header("⚙️ Gestión de Movimientos Fijos Recurrentes")
 
-  col_rec1, col_rec2 = st.columns([1, 1.8])
-  with col_rec1:
-    st.subheader("➕ Registrar Nuevo Ingreso/Gasto Fijo")
-    st.caption("Se proyectará automáticamente todos los meses.")
-
-    r_tipo = st.selectbox(
-        "Tipo",
-        ["Gasto Fijo", "Ingreso Fijo"],
-        key="tab6_r_tipo",
-    )
-    r_cat = st.selectbox(
-        "Categoría",
-        lista_todas_categorias,
-        key="tab6_r_cat",
-    )
-    r_monto = st.number_input(
-        "Monto ($)", min_value=0.0, step=1000.0, key="tab6_r_monto"
-    )
-    r_dia = st.number_input(
-        "Día del mes en que ocurre (1 a 31)",
-        min_value=1,
-        max_value=31,
-        value=5,
-        key="tab6_r_dia",
-    )
-    r_fecha_ini = st.date_input(
-        "Aplica desde el mes de", value=date.today(), key="tab6_r_fecha_ini"
-    )
-    r_desc = st.text_input(
-        "Descripción (Ej: Alquiler, Gimnasio, Internet)", key="tab6_r_desc"
-    )
-
-    if st.button("Guardar Fijo Recurrente", key="tab6_btn_guardar_rec"):
-      if r_monto > 0:
-        try:
-          supabase.table("recurrentes").insert({
-              "tipo": r_tipo,
-              "categoria": r_cat,
-              "monto": r_monto,
-              "dia_mes": r_dia,
-              "fecha_inicio": str(r_fecha_ini),
-              "descripcion": r_desc,
-          }).execute()
-          recargar_app("Movimiento fijo creado exitosamente.")
-        except Exception as e:
-          st.error(f"Error al guardar fijo: {e}")
-      else:
-        st.warning("El monto debe ser mayor a 0.")
-
-  with col_rec2:
+  if not df_recurrentes.empty:
     st.subheader("📋 Movimientos Fijos Configurados")
-    if not df_recurrentes.empty:
-      st.dataframe(
-          df_recurrentes[[
-              "id",
-              "tipo",
-              "categoria",
-              "monto",
-              "dia_mes",
-              "fecha_inicio",
-              "fecha_fin",
-              "descripcion",
-          ]],
-          use_container_width=True,
-          hide_index=True,
-      )
+    st.dataframe(
+        df_recurrentes[[
+            "id",
+            "tipo",
+            "categoria",
+            "monto",
+            "dia_mes",
+            "fecha_inicio",
+            "fecha_fin",
+            "descripcion",
+        ]],
+        use_container_width=True,
+        hide_index=True,
+    )
 
-      st.markdown("---")
-      st.subheader("✏️ Cambiar Valor de un Fijo (Sin alterar meses pasados)")
-      col_mod_r1, col_mod_r2, col_mod_r3 = st.columns(3)
-      with col_mod_r1:
-        id_mod_rec = st.number_input(
-            "ID del Fijo a modificar",
-            min_value=0,
-            step=1,
-            key="tab6_id_mod_rec",
-        )
-      with col_mod_r2:
-        nuevo_monto_rec = st.number_input(
-            "Nuevo Monto ($)",
-            min_value=0.0,
-            step=1000.0,
-            key="tab6_nuevo_monto_rec",
-        )
-      with col_mod_r3:
-        fecha_cambio_rec = st.date_input(
-            "Nuevo precio aplica desde",
-            value=date.today(),
-            key="tab6_fecha_cambio_rec",
-        )
-
-      if st.button("Aplicar Aumento / Cambio de Valor", key="tab6_btn_mod_rec"):
-        if id_mod_rec in df_recurrentes["id"].values and nuevo_monto_rec > 0:
-          try:
-            fila_orig = df_recurrentes[
-                df_recurrentes["id"] == id_mod_rec
-            ].iloc[0]
-
-            fecha_fin_vieja = fecha_cambio_rec.replace(day=1) - timedelta(
-                days=1
-            )
-            supabase.table("recurrentes").update(
-                {"fecha_fin": str(fecha_fin_vieja)}
-            ).eq("id", id_mod_rec).execute()
-
-            supabase.table("recurrentes").insert({
-                "tipo": fila_orig["tipo"],
-                "categoria": fila_orig["categoria"],
-                "monto": nuevo_monto_rec,
-                "dia_mes": fila_orig.get("dia_mes", 1),
-                "fecha_inicio": str(fecha_cambio_rec),
-                "descripcion": fila_orig.get("descripcion", ""),
-            }).execute()
-
-            recargar_app("Aumento aplicado exitosamente desde la fecha.")
-          except Exception as e:
-            st.error(f"Error al actualizar precio histórico: {e}")
-
-      st.markdown("---")
-      id_del_rec = st.number_input(
-          "ID del Fijo a Dar de Baja Total",
+    st.markdown("---")
+    st.subheader("✏️ Cambiar Valor de un Fijo (Sin alterar meses pasados)")
+    col_mod_r1, col_mod_r2, col_mod_r3 = st.columns(3)
+    with col_mod_r1:
+      id_mod_rec = st.number_input(
+          "ID del Fijo a modificar",
           min_value=0,
           step=1,
-          key="tab6_id_del_rec",
+          key="tab6_id_mod_rec",
       )
-      if st.button("🗑️ Eliminar Fijo Recurrente", key="tab6_btn_del_rec"):
-        if id_del_rec in df_recurrentes["id"].values:
-          try:
-            supabase.table("recurrentes").delete().eq(
-                "id", id_del_rec
-            ).execute()
-            recargar_app("Movimiento fijo eliminado.")
-          except Exception as e:
-            st.error("Error al eliminar.")
-    else:
-      st.info("No hay movimientos fijos configurados.")
+    with col_mod_r2:
+      nuevo_monto_rec = st.number_input(
+          "Nuevo Monto ($)",
+          min_value=0.0,
+          step=1000.0,
+          key="tab6_nuevo_monto_rec",
+      )
+    with col_mod_r3:
+      fecha_cambio_rec = st.date_input(
+          "Nuevo precio aplica desde",
+          value=date.today(),
+          key="tab6_fecha_cambio_rec",
+      )
+
+    if st.button("Aplicar Aumento / Cambio de Valor", key="tab6_btn_mod_rec"):
+      if id_mod_rec in df_recurrentes["id"].values and nuevo_monto_rec > 0:
+        try:
+          fila_orig = df_recurrentes[
+              df_recurrentes["id"] == id_mod_rec
+          ].iloc[0]
+
+          fecha_fin_vieja = fecha_cambio_rec.replace(day=1) - timedelta(days=1)
+          supabase.table("recurrentes").update(
+              {"fecha_fin": str(fecha_fin_vieja)}
+          ).eq("id", id_mod_rec).execute()
+
+          supabase.table("recurrentes").insert({
+              "tipo": fila_orig["tipo"],
+              "categoria": fila_orig["categoria"],
+              "monto": nuevo_monto_rec,
+              "dia_mes": fila_orig.get("dia_mes", 1),
+              "fecha_inicio": str(fecha_cambio_rec),
+              "descripcion": fila_orig.get("descripcion", ""),
+          }).execute()
+
+          recargar_app("Aumento aplicado exitosamente desde la fecha.")
+        except Exception as e:
+          st.error(f"Error al actualizar precio histórico: {e}")
+
+    st.markdown("---")
+    id_del_rec = st.number_input(
+        "ID del Fijo a Dar de Baja Total",
+        min_value=0,
+        step=1,
+        key="tab6_id_del_rec",
+    )
+    if st.button("🗑️ Eliminar Fijo Recurrente", key="tab6_btn_del_rec"):
+      if id_del_rec in df_recurrentes["id"].values:
+        try:
+          supabase.table("recurrentes").delete().eq(
+              "id", id_del_rec
+          ).execute()
+          recargar_app("Movimiento fijo eliminado.")
+        except Exception as e:
+          st.error("Error al eliminar.")
+  else:
+    st.info("No hay movimientos fijos configurados aún.")
