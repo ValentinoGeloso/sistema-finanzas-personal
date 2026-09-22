@@ -210,18 +210,27 @@ with tab3:
                 else:
                     st.info("No tenés partidos pendientes de cobrar.")
 
-    elif "Argenliga" in modo_trabajo:
-        st.subheader("Cobro Inmediato Argenliga")
+   elif "Argenliga" in modo_trabajo:
+        st.subheader("Cobro Inmediato Argenliga (con Retención 5%)")
         fecha_arg = st.date_input("Fecha del partido", value=ultimo_domingo())
-        monto_arg = st.number_input("Total cobrado en mano ($)", step=1000.0)
+        monto_mano = st.number_input("Total cobrado en mano ($)", step=1000.0)
+        
+        # Cálculo automático del 5% de descuento
+        descuento_arg = monto_mano * 0.05
+        neto_arg = monto_mano - descuento_arg
+        
+        col_arg1, col_arg2 = st.columns(2)
+        col_arg1.warning(f"📉 **Retención (5%):** -${descuento_arg:,.2f}")
+        col_arg2.success(f"💰 **Neto Real a Bolsillo:** ${neto_arg:,.2f}")
+        
         desc_arg = st.text_input("Nota (Opcional)", placeholder="Ej: 2 partidos cancha 3")
         
-        if st.button("Registrar Argenliga", type="primary") and monto_arg > 0:
+        if st.button("Registrar Argenliga", type="primary") and neto_arg > 0:
             supabase.table("transacciones").insert({
                 "fecha": str(fecha_arg), "tipo": "Ingreso Variable", "categoria": "Arbitraje",
-                "monto": monto_arg, "descripcion": f"Argenliga: {desc_arg}"
+                "monto": neto_arg, "descripcion": f"Argenliga: {desc_arg} (Mano: {monto_mano} - 5%)"
             }).execute()
-            recargar_app("Ingreso Argenliga registrado.")
+            recargar_app("Ingreso Argenliga registrado correctamente.")
 
     elif "Consultorio" in modo_trabajo:
         st.subheader("Generador de Turnos (Martes y Viernes)")
