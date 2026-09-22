@@ -75,7 +75,7 @@ df_metas = cargar_tabla("metas_ahorro")
 df_vencimientos = cargar_tabla("vencimientos", order_by="fecha_vencimiento")
 df_deudas = cargar_tabla("deudas", order_by="id", desc=True)
 
-# --- PROCESAMIENTO INICIAL CON RESILIENCIA ---
+# --- PROCESAMIENTO INICIAL ---
 if (
     not df_transacciones.empty
     and "tipo" in df_transacciones.columns
@@ -127,11 +127,18 @@ else:
       ]
   )
 
+# Lista completa de categorías para selects
+lista_todas_categorias = (
+    df_categorias["nombre"].tolist()
+    if not df_categorias.empty and "nombre" in df_categorias.columns
+    else ["General"]
+)
+
 # --- ESTRUCTURA DE PESTAÑAS ---
 st.title("📈 Mi Ecosistema Financiero Pro")
 st.caption(
-    "💡 *Todos los balances e ingresos se contabilizan por su **Fecha de"
-    " Cobro/Pago Real** (Criterio de Caja).* "
+    "💡 *Todas las tablas son **editables en directo**: modificá cualquier"
+    " valor y tocá el botón de guardar.*"
 )
 
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
@@ -149,7 +156,6 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
 with tab1:
   st.header("📊 Análisis Mensual y Estado de Compromisos")
 
-  # Obtener meses disponibles combinando transacciones y deudas
   meses_trans = (
       df_transacciones["mes_año"].dropna().unique().tolist()
       if not df_transacciones.empty
@@ -171,7 +177,6 @@ with tab1:
       "📅 Seleccionar Mes", meses_disponibles, key="tab1_mes_sel"
   )
 
-  # Filtrar transacciones del mes
   df_mes = (
       df_transacciones[df_transacciones["mes_año"] == mes_seleccionado]
       if not df_transacciones.empty
@@ -189,7 +194,6 @@ with tab1:
       else 0.0
   )
 
-  # Filtrar deudas pendientes del mes seleccionado
   if not df_deudas.empty and "mes_año" in df_deudas.columns:
     df_deudas_mes_pend = df_deudas[
         (df_deudas["mes_año"] == mes_seleccionado)
@@ -212,14 +216,13 @@ with tab1:
   ahorro_caja = ingresos - gastos_pagados
   ahorro_neto_proyectado = (ingresos + por_cobrar_mes) - gastos_mas_deudas
 
-  # Tarjetas Principales
   col1, col2, col3, col4 = st.columns(4)
   col1.metric("Ingresos Cobrados", f"${ingresos:,.2f}")
   col2.metric("Gastos Pagados", f"${gastos_pagados:,.2f}")
   col3.metric(
       "Deudas Pendientes (Debo)",
       f"${deudas_pendientes_mes:,.2f}",
-      help="Deudas con fecha de pago en este mes aún no saldadas.",
+      help="Deudas pendientes registradas para este mes.",
   )
   col4.metric(
       "Gastos + Deudas Totales",
@@ -232,7 +235,6 @@ with tab1:
       delta_color="inverse",
   )
 
-  # Resumen de Balance Neto
   st.markdown("---")
   col_b1, col_b2, col_b3 = st.columns(3)
   col_b1.info(f"💵 **Ahorro Actual en Caja:** ${ahorro_caja:,.2f}")
@@ -242,7 +244,6 @@ with tab1:
   )
 
   st.markdown("---")
-
   col_g1, col_g2 = st.columns(2)
   with col_g1:
     st.subheader("Ingresos vs Gastos (Evolución de Caja)")
@@ -373,10 +374,6 @@ with tab3:
     col_aaa1, col_aaa2 = st.columns([1, 1.5])
     with col_aaa1:
       st.subheader("1. Registrar Partido Arbitrado")
-      st.caption(
-          "Cargá el partido en la lista de pendientes (no impacta en ingresos"
-          " hasta liquidarlo)."
-      )
       f_partido_aaa = st.date_input(
           "Fecha del Partido", value=datetime.today(), key="tab3_f_partido_aaa"
       )
@@ -401,9 +398,7 @@ with tab3:
             }).execute()
             recargar_app("Partido guardado en pendientes.")
           except Exception as e:
-            st.error(
-                "Error de red al guardar el partido. Intentá nuevamente."
-            )
+            st.error("Error al guardar el partido.")
         else:
           st.warning("El monto debe ser mayor a 0.")
 
@@ -414,7 +409,7 @@ with tab3:
             df_partidos_aaa["estado"] == "Pendiente"
         ].copy()
         if not df_pend.empty:
-          st.write("Seleccioná los partidos que entran en esta liquidación:")
+          st.write("Seleccioná y editá partidos que entran en la liquidación:")
           df_pend["Incluir"] = True
           df_pend = df_pend[["Incluir", "id", "fecha", "detalle", "monto"]]
           editado = st.data_editor(
@@ -423,7 +418,11 @@ with tab3:
                   "Incluir": st.column_config.CheckboxColumn(
                       "Cobrar ahora", default=True
                   ),
-                  "id": None,
+                  "id": st.column_config.NumberColumn("ID", disabled=True),
+                  "fecha": st.column_config.TextColumn("Fecha Partido"),
+                  "monto": st.column_config.NumberColumn(
+                      "Monto ($)", min_value=0.0
+                  ),
               },
               hide_index=True,
               use_container_width=True,
@@ -440,15 +439,9 @@ with tab3:
 
           fecha_proyectada = primer_viernes_mes_siguiente(date.today())
           fecha_cobro_final = st.date_input(
-              "📅 Fecha de Cobro Real (Cuándo ingresa el dinero)",
+              "📅 Fecha de Cobro Real",
               value=fecha_proyectada,
               key="tab3_f_cobro_aaa",
-          )
-
-          st.info(
-              f"💡 Esta ganancia de **${neto_calculado:,.0f}** se contabilizará"
-              f" en el Dashboard de **{fecha_cobro_final.strftime('%Y-%m')}**"
-              " (Mes de cobro)."
           )
 
           if st.button(
@@ -477,10 +470,7 @@ with tab3:
                     f" {fecha_cobro_final}."
                 )
               except Exception as e:
-                st.error(
-                    "Error al procesar la liquidación en Supabase. Intentá de"
-                    " nuevo."
-                )
+                st.error("Error al procesar la liquidación.")
             else:
               st.warning("El neto calculado debe ser mayor a 0.")
         else:
@@ -531,7 +521,7 @@ with tab3:
           }).execute()
           recargar_app("Ingreso Argenliga registrado correctamente.")
         except Exception as e:
-          st.error("Error de conexión al registrar Argenliga.")
+          st.error("Error al registrar Argenliga.")
       else:
         st.warning("El monto ingresado debe ser mayor a 0.")
 
@@ -592,7 +582,7 @@ with tab3:
       turnos = []
       for semana in cal:
         for i, dia in enumerate(semana):
-          if dia != 0 and i in [1, 4]:  # Martes (1) y Viernes (4)
+          if dia != 0 and i in [1, 4]:
             f_trabajo = f"{c_anio}-{c_mes:02d}-{dia:02d}"
             f_cobro = str(f_default_cobro) if f_default_cobro else f_trabajo
             turnos.append({
@@ -606,10 +596,7 @@ with tab3:
         st.session_state["turnos_cons"] = pd.DataFrame(turnos)
 
     if "turnos_cons" in st.session_state:
-      st.info(
-          "💡 Podés modificar la columna **'Fecha Cobro'** individualmente si"
-          " cobrás algún turno en un día distinto."
-      )
+      st.info("💡 Podés modificar las fechas y montos antes de guardar:")
       df_editado = st.data_editor(
           st.session_state["turnos_cons"],
           column_config={
@@ -644,11 +631,9 @@ with tab3:
           if datos_a_insertar:
             supabase.table("transacciones").insert(datos_a_insertar).execute()
             del st.session_state["turnos_cons"]
-            recargar_app(
-                "Turnos del consultorio guardados con sus fechas de cobro real."
-            )
+            recargar_app("Turnos del consultorio guardados.")
         except Exception as e:
-          st.error("Error al guardar la planilla de turnos en Supabase.")
+          st.error("Error al guardar la planilla.")
 
 # ==========================================
 # PESTAÑA 4: METAS, VENCIMIENTOS Y DEUDAS
@@ -658,18 +643,239 @@ with tab4:
   sub_t4 = st.radio(
       "Sección:",
       [
-          "Sobres / Metas",
+          "Me deben / Debo (Cuentas Corrientes)",
           "Vencimientos (Corsa / Servicios)",
-          "Me deben / Debo",
+          "Sobres / Metas de Ahorro",
       ],
       horizontal=True,
       key="tab4_sub_section",
   )
 
-  if sub_t4 == "Sobres / Metas":
-    col_m1, col_m2 = st.columns(2)
+  # ------------------------------------
+  # 1. ME DEBEN / DEBO (EDITABLE TOTAL)
+  # ------------------------------------
+  if "Me deben / Debo" in sub_t4:
+    col_d1, col_d2 = st.columns([1, 1.8])
+    with col_d1:
+      st.subheader("➕ Nueva Cuenta Corriente")
+      pers = st.text_input("Persona / Entidad", key="tab4_pers_deuda")
+      t_deuda = st.selectbox(
+          "Tipo", ["Me deben", "Debo"], key="tab4_tipo_deuda"
+      )
+      m_deuda = st.number_input(
+          "Monto ($)", min_value=0.0, step=1000.0, key="tab4_monto_deuda"
+      )
+      fecha_pago_deuda = st.date_input(
+          "Fecha Estimada de Pago / Cobro",
+          value=datetime.today(),
+          key="tab4_fecha_pago_deuda",
+      )
+      det_deuda = st.text_input(
+          "Detalle (Ej: Entrada, préstamo)", key="tab4_det_deuda"
+      )
+
+      if st.button("Guardar Registro", key="tab4_btn_guardar_deuda"):
+        if pers and m_deuda > 0:
+          try:
+            supabase.table("deudas").insert({
+                "persona": pers,
+                "tipo": t_deuda,
+                "monto": m_deuda,
+                "detalle": det_deuda,
+                "estado": "Pendiente",
+                "fecha_pago": str(fecha_pago_deuda),
+            }).execute()
+            recargar_app("Cuenta corriente guardada.")
+          except Exception as e:
+            st.error(f"Error al guardar: {e}")
+        else:
+          st.warning("Completá el nombre de la persona y un monto mayor a 0.")
+
+    with col_d2:
+      st.subheader("✏️ Planilla Editable de Cuentas Corrientes")
+      st.caption(
+          "Podés editar cualquier celda (Monto, Persona, Fecha, Estado) y hacer"
+          " clic en Guardar Cambios."
+      )
+
+      if not df_deudas.empty:
+        # Preparamos los datos para editar
+        df_deudas_edit = df_deudas[
+            ["id", "persona", "tipo", "monto", "fecha_pago", "detalle", "estado"]
+        ].copy()
+        df_deudas_edit["fecha_pago"] = df_deudas_edit["fecha_pago"].astype(str)
+
+        deudas_editadas = st.data_editor(
+            df_deudas_edit,
+            column_config={
+                "id": st.column_config.NumberColumn("ID", disabled=True),
+                "persona": st.column_config.TextColumn("Persona / Entidad"),
+                "tipo": st.column_config.SelectboxColumn(
+                    "Tipo", options=["Me deben", "Debo"]
+                ),
+                "monto": st.column_config.NumberColumn(
+                    "Monto ($)", min_value=0.0, format="$%f"
+                ),
+                "fecha_pago": st.column_config.TextColumn(
+                    "Fecha Est. (AAAA-MM-DD)"
+                ),
+                "detalle": st.column_config.TextColumn("Detalle"),
+                "estado": st.column_config.SelectboxColumn(
+                    "Estado", options=["Pendiente", "Saldado"]
+                ),
+            },
+            hide_index=True,
+            use_container_width=True,
+            key="tab4_editor_deudas",
+        )
+
+        col_btn_d1, col_btn_d2 = st.columns(2)
+        with col_btn_d1:
+          if st.button(
+              "💾 Guardar Cambios en Deudas",
+              type="primary",
+              key="tab4_btn_update_deudas",
+          ):
+            try:
+              for _, row in deudas_editadas.iterrows():
+                supabase.table("deudas").update({
+                    "persona": str(row["persona"]),
+                    "tipo": str(row["tipo"]),
+                    "monto": float(row["monto"]),
+                    "fecha_pago": str(row["fecha_pago"]),
+                    "detalle": str(row["detalle"]) if row["detalle"] else "",
+                    "estado": str(row["estado"]),
+                }).eq("id", row["id"]).execute()
+              recargar_app("Cuentas corrientes actualizadas exitosamente.")
+            except Exception as e:
+              st.error(f"Error al actualizar las deudas: {e}")
+
+        with col_btn_d2:
+          id_del_deuda = st.number_input(
+              "ID a Eliminar",
+              min_value=0,
+              step=1,
+              key="tab4_id_del_deuda",
+          )
+          if st.button("🗑️ Eliminar Fila", key="tab4_btn_del_deuda"):
+            if id_del_deuda in df_deudas["id"].values:
+              try:
+                supabase.table("deudas").delete().eq(
+                    "id", id_del_deuda
+                ).execute()
+                recargar_app(f"Deuda ID {id_del_deuda} eliminada.")
+              except Exception as e:
+                st.error("Error al eliminar.")
+            else:
+                st.error("ID no encontrado.")
+      else:
+        st.info("No hay cuentas corrientes registradas.")
+
+  # ------------------------------------
+  # 2. VENCIMIENTOS (EDITABLE TOTAL)
+  # ------------------------------------
+  elif "Vencimientos" in sub_t4:
+    col_v1, col_v2 = st.columns([1, 1.8])
+    with col_v1:
+      st.subheader("➕ Nuevo Vencimiento")
+      con_v = st.text_input(
+          "Concepto (Ej: Patente Corsa, VTV, Seguro)", key="tab4_con_v"
+      )
+      f_v = st.date_input(
+          "Fecha de Vencimiento", value=datetime.today(), key="tab4_f_v"
+      )
+      m_v = st.number_input(
+          "Monto estimado ($)", min_value=0.0, step=1000.0, key="tab4_m_v"
+      )
+      if st.button("Registrar Vencimiento", key="tab4_btn_guardar_venc"):
+        if con_v:
+          try:
+            supabase.table("vencimientos").insert({
+                "concepto": con_v,
+                "fecha_vencimiento": str(f_v),
+                "monto": m_v,
+                "estado": "Pendiente",
+            }).execute()
+            recargar_app("Vencimiento registrado.")
+          except Exception as e:
+            st.error("Error al guardar el vencimiento.")
+        else:
+          st.warning("Ingresá un concepto.")
+
+    with col_v2:
+      st.subheader("✏️ Planilla Editable de Vencimientos")
+      if not df_vencimientos.empty:
+        df_venc_edit = df_vencimientos[
+            ["id", "concepto", "fecha_vencimiento", "monto", "estado"]
+        ].copy()
+        df_venc_edit["fecha_vencimiento"] = df_venc_edit[
+            "fecha_vencimiento"
+        ].astype(str)
+
+        venc_editados = st.data_editor(
+            df_venc_edit,
+            column_config={
+                "id": st.column_config.NumberColumn("ID", disabled=True),
+                "concepto": st.column_config.TextColumn("Concepto"),
+                "fecha_vencimiento": st.column_config.TextColumn(
+                    "Fecha Venc. (AAAA-MM-DD)"
+                ),
+                "monto": st.column_config.NumberColumn(
+                    "Monto ($)", min_value=0.0, format="$%f"
+                ),
+                "estado": st.column_config.SelectboxColumn(
+                    "Estado", options=["Pendiente", "Pagado"]
+                ),
+            },
+            hide_index=True,
+            use_container_width=True,
+            key="tab4_editor_venc",
+        )
+
+        col_bv1, col_bv2 = st.columns(2)
+        with col_bv1:
+          if st.button(
+              "💾 Guardar Cambios en Vencimientos",
+              type="primary",
+              key="tab4_btn_update_venc",
+          ):
+            try:
+              for _, row in venc_editados.iterrows():
+                supabase.table("vencimientos").update({
+                    "concepto": str(row["concepto"]),
+                    "fecha_vencimiento": str(row["fecha_vencimiento"]),
+                    "monto": float(row["monto"]),
+                    "estado": str(row["estado"]),
+                }).eq("id", row["id"]).execute()
+              recargar_app("Vencimientos actualizados.")
+            except Exception as e:
+              st.error(f"Error al actualizar vencimientos: {e}")
+
+        with col_bv2:
+          id_del_venc = st.number_input(
+              "ID a Eliminar", min_value=0, step=1, key="tab4_id_del_venc"
+          )
+          if st.button("🗑️ Eliminar Vencimiento", key="tab4_btn_del_venc"):
+            if id_del_venc in df_vencimientos["id"].values:
+              try:
+                supabase.table("vencimientos").delete().eq(
+                    "id", id_del_venc
+                ).execute()
+                recargar_app(f"Vencimiento {id_del_venc} eliminado.")
+              except Exception as e:
+                st.error("Error al eliminar.")
+            else:
+                st.error("ID no encontrado.")
+      else:
+        st.info("No hay vencimientos cargados.")
+
+  # ------------------------------------
+  # 3. METAS / SOBRES (EDITABLE TOTAL)
+  # ------------------------------------
+  elif "Sobres / Metas" in sub_t4:
+    col_m1, col_m2 = st.columns([1, 1.8])
     with col_m1:
-      st.subheader("Crear / Actualizar Sobres")
+      st.subheader("➕ Crear Sobre de Ahorro")
       n_meta = st.text_input(
           "Nombre de la meta (Ej: Facultad 2027, Mantenimiento Corsa)",
           key="tab4_n_meta",
@@ -701,266 +907,276 @@ with tab4:
           st.warning("Ingresá un nombre para la meta.")
 
     with col_m2:
-      st.subheader("Progreso de tus Metas")
-      if not df_metas.empty and "monto_actual" in df_metas.columns:
-        for _, row in df_metas.iterrows():
-          porc = (
-              min(row["monto_actual"] / row["monto_objetivo"], 1.0)
-              if row["monto_objetivo"] > 0
-              else 0
+      st.subheader("✏️ Planilla Editable de Metas")
+      if not df_metas.empty:
+        df_metas_edit = df_metas[
+            ["id", "nombre", "monto_objetivo", "monto_actual"]
+        ].copy()
+
+        metas_editadas = st.data_editor(
+            df_metas_edit,
+            column_config={
+                "id": st.column_config.NumberColumn("ID", disabled=True),
+                "nombre": st.column_config.TextColumn("Nombre Meta"),
+                "monto_objetivo": st.column_config.NumberColumn(
+                    "Monto Objetivo ($)", min_value=0.0, format="$%f"
+                ),
+                "monto_actual": st.column_config.NumberColumn(
+                    "Monto Actual ($)", min_value=0.0, format="$%f"
+                ),
+            },
+            hide_index=True,
+            use_container_width=True,
+            key="tab4_editor_metas",
+        )
+
+        col_bm1, col_bm2 = st.columns(2)
+        with col_bm1:
+          if st.button(
+              "💾 Guardar Cambios en Metas",
+              type="primary",
+              key="tab4_btn_update_metas",
+          ):
+            try:
+              for _, row in metas_editadas.iterrows():
+                supabase.table("metas_ahorro").update({
+                    "nombre": str(row["nombre"]),
+                    "monto_objetivo": float(row["monto_objetivo"]),
+                    "monto_actual": float(row["monto_actual"]),
+                }).eq("id", row["id"]).execute()
+              recargar_app("Metas actualizadas.")
+            except Exception as e:
+              st.error(f"Error al actualizar metas: {e}")
+
+        with col_bm2:
+          id_del_meta = st.number_input(
+              "ID a Eliminar", min_value=0, step=1, key="tab4_id_del_meta"
           )
-          st.write(
-              f"**{row['nombre']}**: ${row['monto_actual']:,.0f} /"
-              f" ${row['monto_objetivo']:,.0f}"
-          )
-          st.progress(porc)
+          if st.button("🗑️ Eliminar Meta", key="tab4_btn_del_meta"):
+            if id_del_meta in df_metas["id"].values:
+              try:
+                supabase.table("metas_ahorro").delete().eq(
+                    "id", id_del_meta
+                ).execute()
+                recargar_app(f"Meta {id_del_meta} eliminada.")
+              except Exception as e:
+                st.error("Error al eliminar.")
+            else:
+                st.error("ID no encontrado.")
       else:
         st.info("No hay metas creadas.")
 
-  elif sub_t4 == "Vencimientos (Corsa / Servicios)":
-    col_v1, col_v2 = st.columns(2)
-    with col_v1:
-      st.subheader("Nuevo Vencimiento")
-      con_v = st.text_input(
-          "Concepto (Ej: Patente Corsa, VTV, Seguro)", key="tab4_con_v"
-      )
-      f_v = st.date_input(
-          "Fecha de Vencimiento", value=datetime.today(), key="tab4_f_v"
-      )
-      m_v = st.number_input(
-          "Monto estimado ($)", min_value=0.0, step=1000.0, key="tab4_m_v"
-      )
-      if st.button("Registrar Vencimiento", key="tab4_btn_guardar_venc"):
-        if con_v:
-          try:
-            supabase.table("vencimientos").insert({
-                "concepto": con_v,
-                "fecha_vencimiento": str(f_v),
-                "monto": m_v,
-                "estado": "Pendiente",
-            }).execute()
-            recargar_app("Vencimiento registrado.")
-          except Exception as e:
-            st.error("Error al guardar el vencimiento.")
-        else:
-          st.warning("Ingresá un concepto.")
-
-    with col_v2:
-      st.subheader("Próximos Vencimientos")
-      if (
-          not df_vencimientos.empty
-          and "fecha_vencimiento" in df_vencimientos.columns
-      ):
-        for _, row in df_vencimientos.iterrows():
-          try:
-            f_venc = datetime.strptime(
-                str(row["fecha_vencimiento"]), "%Y-%m-%d"
-            ).date()
-            dias_restantes = (f_venc - date.today()).days
-
-            if dias_restantes < 0:
-              st.error(
-                  f"🛑 **{row['concepto']}** venció hace {abs(dias_restantes)}"
-                  f" días (${row['monto']:,.0f})"
-              )
-            elif dias_restantes <= 7:
-              st.warning(
-                  f"⚠️ **{row['concepto']}** vence en {dias_restantes} días"
-                  f" ({row['fecha_vencimiento']}) - ${row['monto']:,.0f}"
-              )
-            else:
-              st.success(
-                  f"✅ **{row['concepto']}** vence el"
-                  f" {row['fecha_vencimiento']} (${row['monto']:,.0f})"
-              )
-          except Exception:
-            pass
-      else:
-        st.info("No hay vencimientos cargados.")
-
-  elif sub_t4 == "Me deben / Debo":
-    col_d1, col_d2 = st.columns(2)
-    with col_d1:
-      st.subheader("Registrar Cuenta Corriente")
-      pers = st.text_input("Persona / Entidad", key="tab4_pers_deuda")
-      t_deuda = st.selectbox(
-          "Tipo", ["Me deben", "Debo"], key="tab4_tipo_deuda"
-      )
-      m_deuda = st.number_input(
-          "Monto ($)", min_value=0.0, step=1000.0, key="tab4_monto_deuda"
-      )
-      fecha_pago_deuda = st.date_input(
-          "Fecha Estimada de Pago / Cobro",
-          value=datetime.today(),
-          key="tab4_fecha_pago_deuda",
-      )
-      det_deuda = st.text_input(
-          "Detalle (Ej: Entrada de cine, prestamo)", key="tab4_det_deuda"
-      )
-
-      if st.button(
-          "Guardar Cuenta Corriente", key="tab4_btn_guardar_deuda"
-      ):
-        if pers and m_deuda > 0:
-          try:
-            supabase.table("deudas").insert({
-                "persona": pers,
-                "tipo": t_deuda,
-                "monto": m_deuda,
-                "detalle": det_deuda,
-                "estado": "Pendiente",
-                "fecha_pago": str(fecha_pago_deuda),
-            }).execute()
-            recargar_app("Registrado correctamente.")
-          except Exception as e:
-            st.error(f"Error al guardar la deuda: {e}")
-        else:
-          st.warning("Completá el nombre de la persona y un monto mayor a 0.")
-
-    with col_d2:
-      st.subheader("Estado de Cuentas Pendientes")
-      if not df_deudas.empty and "estado" in df_deudas.columns:
-        df_d_pend = df_deudas[df_deudas["estado"] == "Pendiente"]
-        if not df_d_pend.empty:
-          cols_mostrar = [
-              "id",
-              "persona",
-              "tipo",
-              "monto",
-              "fecha_pago",
-              "detalle",
-          ]
-          cols_existentes = [c for c in cols_mostrar if c in df_d_pend.columns]
-          st.dataframe(
-              df_d_pend[cols_existentes],
-              use_container_width=True,
-              hide_index=True,
-          )
-
-          id_pago = st.number_input(
-              "ID de la deuda saldada/cobrada",
-              min_value=0,
-              step=1,
-              key="tab4_id_pago_deuda",
-          )
-          if st.button(
-              "Marcar como Saldado / Cobrado", key="tab4_btn_saldar_deuda"
-          ):
-            try:
-              supabase.table("deudas").update({"estado": "Saldado"}).eq(
-                  "id", id_pago
-              ).execute()
-              recargar_app("Actualizado.")
-            except Exception as e:
-              st.error("Error al actualizar la deuda.")
-        else:
-          st.info("No hay deudas pendientes.")
-      else:
-        st.info("No hay deudas cargadas.")
-
 # ==========================================
-# PESTAÑA 5: HISTORIAL Y EXCEL
+# PESTAÑA 5: HISTORIAL Y EXCEL (EDITABLE TOTAL)
 # ==========================================
 with tab5:
-  st.header("📝 Historial, Control y Exportación")
+  st.header("📝 Historial Editable de Transacciones")
+  st.caption(
+      "✏️ **Planilla Interactiva:** Podés hacer doble clic en cualquier celda"
+      " (Monto, Fecha, Categoría, Descripción) para corregirla y guardar los"
+      " cambios directo en la base de datos."
+  )
+
   if not df_transacciones.empty:
-    st.dataframe(
-        df_transacciones[
-            ["id", "fecha", "tipo", "categoria", "monto", "descripcion"]
-        ],
-        use_container_width=True,
+    df_trans_edit = df_transacciones[
+        ["id", "fecha", "tipo", "categoria", "monto", "descripcion"]
+    ].copy()
+    df_trans_edit["fecha"] = df_trans_edit["fecha"].astype(str)
+
+    transacciones_editadas = st.data_editor(
+        df_trans_edit,
+        column_config={
+            "id": st.column_config.NumberColumn("ID", disabled=True),
+            "fecha": st.column_config.TextColumn("Fecha (AAAA-MM-DD)"),
+            "tipo": st.column_config.SelectboxColumn(
+                "Tipo",
+                options=[
+                    "Ingreso Variable",
+                    "Ingreso Fijo",
+                    "Gasto Variable",
+                    "Gasto Fijo",
+                ],
+            ),
+            "categoria": st.column_config.SelectboxColumn(
+                "Categoría", options=lista_todas_categorias
+            ),
+            "monto": st.column_config.NumberColumn(
+                "Monto ($)", min_value=0.0, format="$%f"
+            ),
+            "descripcion": st.column_config.TextColumn("Descripción"),
+        },
         hide_index=True,
+        use_container_width=True,
+        key="tab5_editor_transacciones",
     )
 
-    csv_data = df_transacciones.to_csv(
-        index=False, sep=";", encoding="utf-8-sig"
-    ).encode("utf-8-sig")
-    st.download_button(
-        label="📥 Descargar Historial Completo en Excel (CSV)",
-        data=csv_data,
-        file_name=f"finanzas_pro_{date.today()}.csv",
-        mime="text/csv",
-        type="primary",
-        key="tab5_btn_download_csv",
-    )
-
-    st.markdown("---")
-
-    with st.expander(
-        "✏️ Cambiar Fecha de Cobro de un Movimiento Existente"
-    ):
-      st.caption(
-          "Si cargaste un movimiento previamente con la fecha de trabajo y"
-          " querés moverlo al mes de cobro real:"
-      )
-      id_mod_fecha = st.number_input(
-          "ID del movimiento a reubicar",
-          min_value=0,
-          step=1,
-          key="tab5_id_mod_fecha",
-      )
-      nueva_fecha_cobro = st.date_input(
-          "Nueva Fecha de Cobro",
-          value=datetime.today(),
-          key="tab5_nueva_fecha_cobro",
-      )
-      if st.button("Actualizar Fecha de Cobro", key="tab5_btn_mod_fecha"):
-        if id_mod_fecha in df_transacciones["id"].values:
-          try:
-            supabase.table("transacciones").update(
-                {"fecha": str(nueva_fecha_cobro)}
-            ).eq("id", id_mod_fecha).execute()
-            recargar_app(
-                f"Fecha del movimiento {id_mod_fecha} actualizada a"
-                f" {nueva_fecha_cobro}."
-            )
-          except Exception as e:
-            st.error("Error al actualizar la fecha.")
-        else:
-          st.error("ID no encontrado en el historial.")
-
-    st.markdown("---")
-    id_borrar = st.number_input(
-        "ID del movimiento a borrar por error",
-        min_value=0,
-        step=1,
-        key="tab5_id_borrar",
-    )
-    if st.button("🗑️ Borrar Movimiento", key="tab5_btn_borrar"):
-      if (
-          "id" in df_transacciones.columns
-          and id_borrar in df_transacciones["id"].values
+    col_ht1, col_ht2 = st.columns(2)
+    with col_ht1:
+      if st.button(
+          "💾 GUARDAR CAMBIOS EN HISTORIAL",
+          type="primary",
+          key="tab5_btn_save_trans",
       ):
         try:
-          supabase.table("transacciones").delete().eq(
-              "id", id_borrar
-          ).execute()
-          recargar_app(f"Movimiento {id_borrar} borrado.")
+          for _, row in transacciones_editadas.iterrows():
+            supabase.table("transacciones").update({
+                "fecha": str(row["fecha"]),
+                "tipo": str(row["tipo"]),
+                "categoria": str(row["categoria"]),
+                "monto": float(row["monto"]),
+                "descripcion": (
+                    str(row["descripcion"]) if row["descripcion"] else ""
+                ),
+            }).eq("id", row["id"]).execute()
+          recargar_app("Historial de movimientos actualizado correctamente.")
         except Exception as e:
-          st.error("Error al borrar el movimiento.")
-      else:
-        st.error("ID no encontrado.")
+          st.error(f"Error al actualizar transacciones: {e}")
+
+    with col_ht2:
+      csv_data = df_transacciones.to_csv(
+          index=False, sep=";", encoding="utf-8-sig"
+      ).encode("utf-8-sig")
+      st.download_button(
+          label="📥 Descargar Copia en Excel (CSV)",
+          data=csv_data,
+          file_name=f"finanzas_pro_{date.today()}.csv",
+          mime="text/csv",
+          key="tab5_btn_download_csv",
+      )
+
+    st.markdown("---")
+    col_del_t1, col_del_t2 = st.columns(2)
+    with col_del_t1:
+      id_borrar = st.number_input(
+          "ID del movimiento a borrar por completo",
+          min_value=0,
+          step=1,
+          key="tab5_id_borrar",
+      )
+      if st.button("🗑️ Borrar Movimiento", key="tab5_btn_borrar"):
+        if (
+            "id" in df_transacciones.columns
+            and id_borrar in df_transacciones["id"].values
+        ):
+          try:
+            supabase.table("transacciones").delete().eq(
+                "id", id_borrar
+            ).execute()
+            recargar_app(f"Movimiento {id_borrar} borrado.")
+          except Exception as e:
+            st.error("Error al borrar el movimiento.")
+        else:
+          st.error("ID no encontrado en el historial.")
   else:
-    st.info("No hay historial disponible.")
+    st.info("No hay historial de transacciones disponible.")
 
 # ==========================================
-# PESTAÑA 6: CONFIGURACIÓN
+# PESTAÑA 6: CONFIGURACIÓN (EDITABLE TOTAL)
 # ==========================================
 with tab6:
-  st.header("⚙️ Ajustes del Sistema")
-  with st.expander("➕ Crear Nueva Categoría"):
+  st.header("⚙️ Ajustes de Categorías y Presupuestos")
+
+  col_cat1, col_cat2 = st.columns([1, 1.8])
+  with col_cat1:
+    st.subheader("➕ Crear Categoría")
     nuevo_t = st.selectbox(
         "Tipo", ["Gasto", "Ingreso"], key="tab6_nuevo_tipo_cat"
     )
     nuevo_n = st.text_input("Nombre", key="tab6_nuevo_nombre_cat")
+    nuevo_c = st.selectbox(
+        "Clasificación 50/30/20",
+        ["50-Necesidad", "30-Deseo", "Ingreso", "Ahorro/Inversión"],
+        key="tab6_nuevo_clase_cat",
+    )
+    nuevo_l = st.number_input(
+        "Límite Mensual ($)",
+        min_value=0.0,
+        step=1000.0,
+        key="tab6_nuevo_limite_cat",
+    )
+
     if st.button("Agregar Categoría", key="tab6_btn_agregar_cat"):
       if nuevo_n:
         try:
-          supabase.table("categorias").insert(
-              {"tipo_general": nuevo_t, "nombre": nuevo_n}
-          ).execute()
+          supabase.table("categorias").insert({
+              "tipo_general": nuevo_t,
+              "nombre": nuevo_n,
+              "clase_503020": nuevo_c,
+              "limite_mensual": nuevo_l,
+          }).execute()
           recargar_app("Categoría agregada.")
         except Exception as e:
           st.error("Error al agregar categoría.")
       else:
         st.warning("Escribí el nombre de la categoría.")
+
+  with col_cat2:
+    st.subheader("✏️ Planilla Editable de Categorías")
+    if not df_categorias.empty:
+      df_cat_edit = df_categorias[
+          ["id", "nombre", "tipo_general", "clase_503020", "limite_mensual"]
+      ].copy()
+
+      cat_editadas = st.data_editor(
+          df_cat_edit,
+          column_config={
+              "id": st.column_config.NumberColumn("ID", disabled=True),
+              "nombre": st.column_config.TextColumn("Nombre Categoría"),
+              "tipo_general": st.column_config.SelectboxColumn(
+                  "Tipo", options=["Gasto", "Ingreso"]
+              ),
+              "clase_503020": st.column_config.SelectboxColumn(
+                  "Clasificación 50/30",
+                  options=[
+                      "50-Necesidad",
+                      "30-Deseo",
+                      "Ingreso",
+                      "Ahorro/Inversión",
+                  ],
+              ),
+              "limite_mensual": st.column_config.NumberColumn(
+                  "Límite Mensual ($)", min_value=0.0, format="$%f"
+              ),
+          },
+          hide_index=True,
+          use_container_width=True,
+          key="tab6_editor_cat",
+      )
+
+      col_bcat1, col_bcat2 = st.columns(2)
+      with col_bcat1:
+        if st.button(
+            "💾 Guardar Cambios en Categorías",
+            type="primary",
+            key="tab6_btn_update_cat",
+        ):
+          try:
+            for _, row in cat_editadas.iterrows():
+              supabase.table("categorias").update({
+                  "nombre": str(row["nombre"]),
+                  "tipo_general": str(row["tipo_general"]),
+                  "clase_503020": str(row["clase_503020"]),
+                  "limite_mensual": float(row["limite_mensual"]),
+              }).eq("id", row["id"]).execute()
+            recargar_app("Categorías actualizadas correctamente.")
+          except Exception as e:
+            st.error(f"Error al actualizar categorías: {e}")
+
+      with col_bcat2:
+        id_del_cat = st.number_input(
+            "ID Categoría a Eliminar",
+            min_value=0,
+            step=1,
+            key="tab6_id_del_cat",
+        )
+        if st.button("🗑️ Eliminar Categoría", key="tab6_btn_del_cat"):
+          if id_del_cat in df_categorias["id"].values:
+            try:
+              supabase.table("categorias").delete().eq(
+                  "id", id_del_cat
+              ).execute()
+              recargar_app(f"Categoría {id_del_cat} eliminada.")
+            except Exception as e:
+              st.error("Error al eliminar categoría.")
+          else:
+            st.error("ID no encontrado.")
