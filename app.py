@@ -210,12 +210,11 @@ with tab3:
                 else:
                     st.info("No tenés partidos pendientes de cobrar.")
 
-   elif "Argenliga" in modo_trabajo:
+    elif "Argenliga" in modo_trabajo:
         st.subheader("Cobro Inmediato Argenliga (con Retención 5%)")
         fecha_arg = st.date_input("Fecha del partido", value=ultimo_domingo())
         monto_mano = st.number_input("Total cobrado en mano ($)", step=1000.0)
         
-        # Cálculo automático del 5% de descuento
         descuento_arg = monto_mano * 0.05
         neto_arg = monto_mano - descuento_arg
         
@@ -228,7 +227,7 @@ with tab3:
         if st.button("Registrar Argenliga", type="primary") and neto_arg > 0:
             supabase.table("transacciones").insert({
                 "fecha": str(fecha_arg), "tipo": "Ingreso Variable", "categoria": "Arbitraje",
-                "monto": neto_arg, "descripcion": f"Argenliga: {desc_arg} (Mano: {monto_mano} - 5%)"
+                "monto": neto_arg, "descripcion": f"Argenliga: {desc_arg} (Mano: {monto_mano} - 5% retención)"
             }).execute()
             recargar_app("Ingreso Argenliga registrado correctamente.")
 
@@ -354,7 +353,6 @@ with tab5:
     if not df_transacciones.empty:
         st.dataframe(df_transacciones[['id', 'fecha', 'tipo', 'categoria', 'monto', 'descripcion']], use_container_width=True, hide_index=True)
         
-       # Botón para exportar a Excel / CSV legible
         csv_data = df_transacciones.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
         st.download_button(
             label="📥 Descargar Historial Completo en Excel (CSV)",
