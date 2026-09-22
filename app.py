@@ -2,7 +2,6 @@ import streamlit as st
 from supabase import create_client
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 from datetime import datetime, date, timedelta
 import calendar
 import time
@@ -21,7 +20,18 @@ except Exception as e:
     st.stop()
 
 # --- FUNCIONES DE UTILIDAD ---
-def primer_viernes_del_mes(year, month):
+def primer_viernes_mes_siguiente(fecha_base=None):
+    if fecha_base is None:
+        fecha_base = date.today()
+    
+    # Calcular mes siguiente
+    if fecha_base.month == 12:
+        year = fecha_base.year + 1
+        month = 1
+    else:
+        year = fecha_base.year
+        month = fecha_base.month + 1
+        
     c = calendar.monthcalendar(year, month)
     for week in c:
         if week[calendar.FRIDAY] != 0:
@@ -34,7 +44,7 @@ def ultimo_domingo():
 
 def recargar_app(mensaje="✅ Acción completada"):
     st.toast(mensaje, icon="✅")
-    time.sleep(1) # Da tiempo a que se vea el mensaje
+    time.sleep(1.5)
     st.rerun()
 
 # --- CARGA DE DATOS ---
@@ -44,16 +54,18 @@ def cargar_tabla(nombre_tabla, order_by="id", desc=False):
 
 df_transacciones = cargar_tabla("transacciones", order_by="fecha", desc=True)
 df_categorias = cargar_tabla("categorias")
+df_partidos_aaa = cargar_tabla("partidos_aaa", order_by="fecha", desc=True)
 
 # --- PROCESAMIENTO INICIAL ---
 if not df_transacciones.empty:
     df_transacciones['fecha'] = pd.to_datetime(df_transacciones['fecha']).dt.date
     df_transacciones['mes_año'] = pd.to_datetime(df_transacciones['fecha']).dt.strftime('%Y-%m')
+    df_transacciones['tipo_general'] = df_transacciones['tipo'].apply(lambda x: 'Ingreso' if 'Ingreso' in x else 'Gasto')
 
 # --- ESTRUCTURA DE PESTAÑAS ---
 st.title("📈 Mi Ecosistema Financiero")
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "📊 Dashboard & 50/30/20", 
+    "📊 Dashboards", 
     "➕ Carga Rápida", 
     "💼 Automatizaciones Laborales", 
     "📝 Historial", 
@@ -61,73 +73,74 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
 ])
 
 # ==========================================
-# PESTAÑA 1: DASHBOARD, PRESUPUESTOS Y 50/30/20
+# PESTAÑA 1: DASHBOARDS Y SIMULADOR
 # ==========================================
 with tab1:
     if df_transacciones.empty:
         st.info("No hay datos registrados aún.")
     else:
+        st.header("📊 Análisis Mensual")
         meses_disponibles = sorted(df_transacciones['mes_año'].unique(), reverse=True)
-        mes_seleccionado = st.selectbox("📅 Mes a analizar", meses_disponibles)
+        mes_seleccionado = st.selectbox("📅 Seleccionar Mes", meses_disponibles)
         df_mes = df_transacciones[df_transacciones['mes_año'] == mes_seleccionado]
         
-        ingresos = df_mes[df_mes['tipo'].str.contains("Ingreso")]['monto'].sum()
-        gastos = df_mes[df_mes['tipo'].str.contains("Gasto")]['monto'].sum()
+        ingresos = df_mes[df_mes['tipo_general'] == 'Ingreso']['monto'].sum()
+        gastos = df_mes[df_mes['tipo_general'] == 'Gasto']['monto'].sum()
         ahorro = ingresos - gastos
         
         col1, col2, col3 = st.columns(3)
         col1.metric("Ingresos Neta", f"${ingresos:,.2f}")
         col2.metric("Gastos Totales", f"${gastos:,.2f}")
-        col3.metric("Ahorro / Inversión", f"${ahorro:,.2f}")
+        col3.metric("Ahorro / Inversión", f"${ahorro:,.2f}", delta=f"{(ahorro/ingresos)*100:.1f}% del ingreso" if ingresos>0 else "")
+        
         st.markdown("---")
         
-        # --- ANÁLISIS 50/30/20 ---
-        st.subheader("⚖️ Termómetro Financiero: Regla 50/30/20")
-        if ingresos > 0 and not df_categorias.empty and 'clase_503020' in df_categorias.columns:
-            # Unir gastos con sus categorías para saber si es 50 o 30
-            df_gastos = df_mes[df_mes['tipo'].str.contains("Gasto")].copy()
-            if not df_gastos.empty:
-                df_gastos = df_gastos.merge(df_categorias[['nombre', 'clase_503020']], left_on='categoria', right_on='nombre', how='left')
-                
-                gastos_50 = df_gastos[df_gastos['clase_503020'] == '50-Necesidad']['monto'].sum()
-                gastos_30 = df_gastos[df_gastos['clase_503020'] == '30-Deseo']['monto'].sum()
-                
-                pct_50 = (gastos_50 / ingresos) * 100
-                pct_30 = (gastos_30 / ingresos) * 100
-                pct_20 = (ahorro / ingresos) * 100 if ahorro > 0 else 0
-                
-                c_50, c_30, c_20 = st.columns(3)
-                c_50.progress(min(pct_50 / 100, 1.0))
-                c_50.caption(f"**Necesidades (Ideal 50%):** {pct_50:.1f}% (${gastos_50:,.0f})")
-                
-                c_30.progress(min(pct_30 / 100, 1.0))
-                c_30.caption(f"**Deseos (Ideal 30%):** {pct_30:.1f}% (${gastos_30:,.0f})")
-                
-                c_20.progress(min(pct_20 / 100, 1.0))
-                c_20.caption(f"**Ahorro (Ideal 20%):** {pct_20:.1f}% (${ahorro:,.0f})")
+        # --- GRÁFICOS COMPARATIVOS ---
+        col_g1, col_g2 = st.columns(2)
+        
+        with col_g1:
+            st.subheader("Ingresos vs Gastos (Evolución)")
+            df_hist = df_transacciones.groupby(['mes_año', 'tipo_general'])['monto'].sum().reset_index()
+            fig_hist = px.bar(df_hist, x='mes_año', y='monto', color='tipo_general', barmode='group',
+                              color_discrete_map={'Ingreso': '#2ecc71', 'Gasto': '#e74c3c'})
+            st.plotly_chart(fig_hist, use_container_width=True)
+            
+        with col_g2:
+            st.subheader(f"Desglose de Gastos ({mes_seleccionado})")
+            df_gastos_mes = df_mes[df_mes['tipo_general'] == 'Gasto']
+            if not df_gastos_mes.empty:
+                fig_gastos = px.pie(df_gastos_mes, names='categoria', values='monto', hole=0.4)
+                st.plotly_chart(fig_gastos, use_container_width=True)
             else:
-                st.write("Aún no hay gastos este mes para analizar.")
-        
+                st.write("No hay gastos registrados en este mes.")
+                
+        st.subheader(f"Desglose de Ingresos ({mes_seleccionado})")
+        df_ingresos_mes = df_mes[df_mes['tipo_general'] == 'Ingreso']
+        if not df_ingresos_mes.empty:
+            fig_ingresos = px.pie(df_ingresos_mes, names='categoria', values='monto', hole=0.4)
+            st.plotly_chart(fig_ingresos, use_container_width=True)
+
         st.markdown("---")
         
-        # --- ALARMAS DE PRESUPUESTO ---
-        st.subheader("🚨 Control de Presupuestos")
-        if 'limite_mensual' in df_categorias.columns:
-            categorias_con_limite = df_categorias[df_categorias['limite_mensual'] > 0]
-            for _, row in categorias_con_limite.iterrows():
-                gastado = df_mes[df_mes['categoria'] == row['nombre']]['monto'].sum()
-                limite = row['limite_mensual']
-                porcentaje = (gastado / limite) * 100
-                
-                if porcentaje >= 90:
-                    st.error(f"**{row['nombre']}**: Gastaste ${gastado:,.0f} de ${limite:,.0f} ({porcentaje:.0f}%). ¡ALERTA ROJA! 🛑")
-                elif porcentaje >= 75:
-                    st.warning(f"**{row['nombre']}**: Gastaste ${gastado:,.0f} de ${limite:,.0f} ({porcentaje:.0f}%). Cuidado. ⚠️")
-                else:
-                    st.success(f"**{row['nombre']}**: Gastaste ${gastado:,.0f} de ${limite:,.0f} ({porcentaje:.0f}%). Viene bien. ✅")
+        # --- SIMULADOR DE RENDIMIENTO (MERCADO PAGO) ---
+        st.header("🧮 Simulador de Rendimiento Diario (Interés Compuesto)")
+        col_s1, col_s2, col_s3 = st.columns(3)
+        with col_s1:
+            cap_inicial = st.number_input("Capital a Invertir ($)", value=float(ahorro if ahorro > 0 else 100000), step=10000.0)
+        with col_s2:
+            tna = st.number_input("TNA Actual de la Billetera (%)", value=38.0, step=1.0)
+        with col_s3:
+            dias_inversion = st.number_input("Días de inversión", value=30, min_value=1)
+            
+        # Fórmula de interés compuesto diario
+        tasa_diaria = (tna / 100) / 365
+        cap_final = cap_inicial * ((1 + tasa_diaria) ** dias_inversion)
+        ganancia = cap_final - cap_inicial
+        
+        st.success(f"💸 **Dinero total al final:** ${cap_final:,.2f} (Ganaste **${ganancia:,.2f}** sin hacer nada)")
 
 # ==========================================
-# PESTAÑA 2: CARGA RÁPIDA (Común)
+# PESTAÑA 2: CARGA RÁPIDA
 # ==========================================
 with tab2:
     st.header("📝 Movimiento Único")
@@ -154,33 +167,68 @@ with tab3:
     modo_trabajo = st.radio("Seleccioná tu actividad:", ["⚽ Arbitraje: AAA (Sábados/Mensual)", "⚽ Arbitraje: Argenliga (Domingos/Diario)", "🩺 Consultorio Méd. (Semanal)"], horizontal=True)
     
     # ------------------------------------
-    # 1. ARBITRAJE AAA
+    # 1. ARBITRAJE AAA (NUEVO SISTEMA)
     # ------------------------------------
     if "AAA" in modo_trabajo:
-        st.subheader("Cierre Mensual AAA")
-        st.write("Se calcula automáticamente la fecha de pago (1er Viernes del mes seleccionado) y se descuenta la cuota social de $15,000.")
+        col_aaa1, col_aaa2 = st.columns([1, 1.5])
         
-        col_a1, col_a2 = st.columns(2)
-        with col_a1:
-            mes_cobro = st.number_input("Mes de cobro", min_value=1, max_value=12, value=datetime.today().month)
-            anio_cobro = st.number_input("Año de cobro", min_value=2024, max_value=2030, value=datetime.today().year)
-        with col_a2:
-            bruto_aaa = st.number_input("Monto BRUTO generado en los partidos ($)", step=5000.0)
+        with col_aaa1:
+            st.subheader("1. Cargar Partido (Día a Día)")
+            f_partido_aaa = st.date_input("Fecha del Partido", value=datetime.today())
+            m_partido_aaa = st.number_input("Honorario del partido ($)", min_value=0.0, step=1000.0)
+            d_partido_aaa = st.text_input("Detalle (Ej: Cat. Juveniles Cancha 2)")
             
-        fecha_pago_aaa = primer_viernes_del_mes(anio_cobro, mes_cobro)
-        neto_aaa = bruto_aaa - 15000 if bruto_aaa > 0 else 0
-        
-        st.info(f"📅 **Fecha de pago calculada:** {fecha_pago_aaa.strftime('%A %d/%m/%Y')}")
-        st.warning(f"📉 **Descuento Cuota AAA:** -$15,000")
-        st.success(f"💰 **Neto a depositar/cobrar:** ${neto_aaa:,.2f}")
-        
-        if st.button("Registrar Liquidación AAA", type="primary", use_container_width=True) and neto_aaa > 0:
-            nuevo_aaa = {
-                "fecha": str(fecha_pago_aaa), "tipo": "Ingreso Variable", "categoria": "Arbitraje",
-                "monto": neto_aaa, "descripcion": f"Liquidación AAA (Bruto: {bruto_aaa} - Cuota: 15000)"
-            }
-            supabase.table("transacciones").insert(nuevo_aaa).execute()
-            recargar_app("Liquidación AAA registrada.")
+            if st.button("Guardar Partido"):
+                supabase.table("partidos_aaa").insert({
+                    "fecha": str(f_partido_aaa), "detalle": d_partido_aaa, "monto": m_partido_aaa, "estado": "Pendiente"
+                }).execute()
+                recargar_app("Partido guardado en pendientes.")
+                
+        with col_aaa2:
+            st.subheader("2. Liquidación / Cierre de Caja")
+            if not df_partidos_aaa.empty:
+                df_pend = df_partidos_aaa[df_partidos_aaa['estado'] == 'Pendiente'].copy()
+                if not df_pend.empty:
+                    st.write("Seleccioná los partidos que entran en este cobro (si cerraron antes la caja, destildá los últimos).")
+                    
+                    df_pend['Incluir'] = True
+                    df_pend = df_pend[['Incluir', 'id', 'fecha', 'detalle', 'monto']]
+                    
+                    # Tabla interactiva con checkboxes
+                    editado = st.data_editor(
+                        df_pend,
+                        column_config={"Incluir": st.column_config.CheckboxColumn("Cobrar ahora", default=True), "id": None},
+                        hide_index=True, use_container_width=True
+                    )
+                    
+                    # Cálculo de liquidación
+                    seleccionados = editado[editado['Incluir'] == True]
+                    bruto_calculado = seleccionados['monto'].sum()
+                    neto_calculado = bruto_calculado - 15000
+                    
+                    col_tot1, col_tot2, col_tot3 = st.columns(3)
+                    col_tot1.metric("Bruto a cobrar", f"${bruto_calculado:,.0f}")
+                    col_tot2.metric("Cuota Social AAA", "-$15,000")
+                    col_tot3.metric("NETO FINAL", f"${neto_calculado:,.0f}")
+                    
+                    fecha_proyectada = primer_viernes_mes_siguiente(date.today())
+                    fecha_cobro_final = st.date_input("Fecha de cobro real (Automático: 1er viernes mes sig.)", value=fecha_proyectada)
+                    
+                    if st.button("Generar Liquidación Mensual AAA", type="primary") and neto_calculado > 0:
+                        # 1. Guardar como ingreso en transacciones
+                        supabase.table("transacciones").insert({
+                            "fecha": str(fecha_cobro_final), "tipo": "Ingreso Variable", "categoria": "Arbitraje",
+                            "monto": neto_calculado, "descripcion": f"Liquidación AAA ({len(seleccionados)} partidos - Cuota descontada)"
+                        }).execute()
+                        
+                        # 2. Marcar los partidos elegidos como 'Cobrado'
+                        ids_cobrados = seleccionados['id'].tolist()
+                        for p_id in ids_cobrados:
+                            supabase.table("partidos_aaa").update({"estado": "Cobrado"}).eq("id", p_id).execute()
+                            
+                        recargar_app(f"Liquidación agendada para el {fecha_cobro_final}.")
+                else:
+                    st.info("No tenés partidos pendientes de cobrar.")
 
     # ------------------------------------
     # 2. ARBITRAJE ARGENLIGA
@@ -212,7 +260,6 @@ with tab3:
             turnos = []
             for semana in cal:
                 for i, dia in enumerate(semana):
-                    # 1 = Martes, 4 = Viernes
                     if dia != 0 and i in [1, 4]:
                         turnos.append({
                             "Fecha": f"{c_anio}-{c_mes:02d}-{dia:02d}", 
@@ -224,79 +271,36 @@ with tab3:
                 st.session_state['turnos_cons'] = pd.DataFrame(turnos)
 
         if 'turnos_cons' in st.session_state:
-            st.write("💡 Modificá el monto si un día trabajaste menos, o seleccioná y borrá la fila con 'Suprimir' si fue feriado.")
             df_editado = st.data_editor(st.session_state['turnos_cons'], num_rows="dynamic", use_container_width=True)
-            
             if st.button("💾 Guardar Planilla Mensual", type="primary"):
                 datos_a_insertar = []
                 for _, row in df_editado.iterrows():
                     datos_a_insertar.append({
-                        "fecha": row['Fecha'], "tipo": "Ingreso Variable", "categoria": row['Categoría'],
+                        "fecha": row['Fecha'], "tipo": "Ingreso Fijo", "categoria": row['Categoría'],
                         "monto": row['Monto'], "descripcion": row['Descripción']
                     })
                 supabase.table("transacciones").insert(datos_a_insertar).execute()
                 del st.session_state['turnos_cons']
-                recargar_app(f"{len(datos_a_insertar)} turnos guardados.")
+                recargar_app("Turnos del consultorio guardados.")
 
 # ==========================================
-# PESTAÑA 4: HISTORIAL
+# PESTAÑA 4 y 5: HISTORIAL Y CONFIGURACIÓN (Se mantienen igual pero limpias)
 # ==========================================
 with tab4:
     st.header("📝 Historial y Control")
     if not df_transacciones.empty:
         st.dataframe(df_transacciones[['id', 'fecha', 'tipo', 'categoria', 'monto', 'descripcion']], use_container_width=True, hide_index=True)
-        
         id_borrar = st.number_input("ID del movimiento a borrar (por error)", min_value=0, step=1)
         if st.button("🗑️ Borrar Movimiento"):
             if id_borrar in df_transacciones['id'].values:
                 supabase.table("transacciones").delete().eq("id", id_borrar).execute()
                 recargar_app(f"Movimiento {id_borrar} borrado.")
-            else:
-                st.error("ID no encontrado.")
 
-# ==========================================
-# PESTAÑA 5: CONFIGURACIÓN
-# ==========================================
 with tab5:
     st.header("⚙️ Ajustes del Sistema")
-    
-    st.subheader("Configurar Categorías, Presupuestos y 50/30/20")
-    if not df_categorias.empty and 'limite_mensual' in df_categorias.columns:
-        st.write("Definí tus límites mensuales y clasificá tus gastos para que el termómetro 50/30/20 funcione perfecto.")
-        
-        # Hacemos el DataFrame editable para actualizar directamente a la base
-        df_cat_editar = df_categorias[['id', 'nombre', 'tipo_general', 'clase_503020', 'limite_mensual']]
-        df_cat_editado = st.data_editor(
-            df_cat_editar, 
-            column_config={
-                "id": st.column_config.NumberColumn("ID", disabled=True),
-                "tipo_general": st.column_config.SelectboxColumn("Tipo", options=["Ingreso", "Gasto"]),
-                "clase_503020": st.column_config.SelectboxColumn("Regla 50/30", options=["50-Necesidad", "30-Deseo", "Ingreso", "Ahorro/Inversión"]),
-                "limite_mensual": st.column_config.NumberColumn("Límite Mensual ($)", min_value=0.0)
-            },
-            hide_index=True, use_container_width=True
-        )
-        
-        if st.button("💾 Guardar Cambios en Categorías"):
-            # Actualiza cada fila iterando
-            for index, row in df_cat_editado.iterrows():
-                supabase.table("categorias").update({
-                    "nombre": row['nombre'],
-                    "tipo_general": row['tipo_general'],
-                    "clase_503020": row['clase_503020'],
-                    "limite_mensual": row['limite_mensual']
-                }).eq("id", row['id']).execute()
-            recargar_app("Categorías y presupuestos actualizados.")
-            
     with st.expander("➕ Crear Nueva Categoría"):
         nuevo_t = st.selectbox("Tipo", ["Gasto", "Ingreso"])
         nuevo_n = st.text_input("Nombre")
-        nuevo_c = st.selectbox("Clasificación (50/30/20)", ["50-Necesidad", "30-Deseo", "Ingreso"])
-        nuevo_l = st.number_input("Límite Mensual (0 = sin límite)", min_value=0.0)
-        
-        if st.button("Agregar"):
-            supabase.table("categorias").insert({
-                "tipo_general": nuevo_t, "nombre": nuevo_n, 
-                "clase_503020": nuevo_c, "limite_mensual": nuevo_l
-            }).execute()
+        if st.button("Agregar Categoría"):
+            supabase.table("categorias").insert({"tipo_general": nuevo_t, "nombre": nuevo_n}).execute()
             recargar_app("Categoría agregada.")
