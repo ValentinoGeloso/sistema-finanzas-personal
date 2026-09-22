@@ -216,7 +216,6 @@ def calcular_vencimientos_fijos(hoy=None):
     max_days = calendar.monthrange(cur_year, cur_month)[1]
     due_date_curr = date(cur_year, cur_month, min(dia_m, max_days))
 
-    # Verificar si el fijo ya estaba activo en el mes actual
     if due_date_curr < f_ini or (f_fin and due_date_curr > f_fin):
       if due_date_curr < f_ini:
         cur_year = f_ini.year
@@ -460,10 +459,48 @@ with tab1:
   )
 
 # ==========================================
-# PESTAÑA 2: CARGA RÁPIDA (SEPARADA Y CLARA)
+# PESTAÑA 2: CARGA RÁPIDA (CON CREACIÓN DE CATEGORÍAS)
 # ==========================================
 with tab2:
   st.header("📝 Carga Rápida de Operaciones")
+
+  with st.expander("➕ ¿Querés crear una nueva Categoría para usar ahora?"):
+    col_nc1, col_nc2, col_nc3, col_nc4 = st.columns([1.5, 1, 1, 1])
+    with col_nc1:
+      nc_nombre = st.text_input(
+          "Nombre de la Categoría", key="tab2_exp_nc_nombre"
+      )
+    with col_nc2:
+      nc_tipo = st.selectbox(
+          "Tipo", ["Gasto", "Ingreso"], key="tab2_exp_nc_tipo"
+      )
+    with col_nc3:
+      nc_clase = st.selectbox(
+          "Clasificación 50/30/20",
+          ["50-Necesidad", "30-Deseo", "Ingreso", "Ahorro/Inversión"],
+          key="tab2_exp_nc_clase",
+      )
+    with col_nc4:
+      st.write(" ")
+      st.write(" ")
+      if st.button("💾 Crear Categoría", key="tab2_btn_crear_cat_exp"):
+        if nc_nombre.strip():
+          try:
+            supabase.table("categorias").insert({
+                "nombre": nc_nombre.strip(),
+                "tipo_general": nc_tipo,
+                "clase_503020": nc_clase,
+                "limite_mensual": 0,
+            }).execute()
+            recargar_app(
+                f"Categoría '{nc_nombre.strip()}' creada con éxito."
+            )
+          except Exception as e:
+            st.error(f"Error al crear categoría: {e}")
+        else:
+          st.warning("Escribí el nombre de la categoría.")
+
+  st.markdown("---")
 
   sub_tab2 = st.radio(
       "¿Qué querés cargar?",
@@ -493,15 +530,37 @@ with tab2:
         key="tab2_tipo_mov",
     )
     tipo_general = "Ingreso" if "Ingreso" in tipo_mov else "Gasto"
+
     opciones_cat = (
         df_categorias[df_categorias["tipo_general"] == tipo_general][
             "nombre"
         ].tolist()
         if not df_categorias.empty and "tipo_general" in df_categorias.columns
-        else ["Sin categorías"]
+        else []
+    )
+    opciones_cat_select = ["➕ [ Crear nueva categoría... ]"] + opciones_cat
+
+    cat_mov_sel = st.selectbox(
+        "Categoría", opciones_cat_select, key="tab2_cat_mov_sel"
     )
 
-    cat_mov = st.selectbox("Categoría", opciones_cat, key="tab2_cat_mov")
+    if cat_mov_sel == "➕ [ Crear nueva categoría... ]":
+      col_ncat1, col_ncat2 = st.columns([2, 1])
+      with col_ncat1:
+        cat_mov = st.text_input(
+            "Escribí el nombre de la nueva categoría:", key="tab2_custom_cat_a"
+        )
+      with col_ncat2:
+        clase_custom = st.selectbox(
+            "Clasificación 50/30/20",
+            ["50-Necesidad", "30-Deseo", "Ingreso", "Ahorro/Inversión"],
+            key="tab2_custom_clase_a",
+        )
+      es_nueva_cat = True
+    else:
+      cat_mov = cat_mov_sel
+      es_nueva_cat = False
+
     monto_mov = st.number_input(
         "Monto ($)", min_value=0.0, step=1000.0, key="tab2_monto_mov"
     )
@@ -513,8 +572,23 @@ with tab2:
     )
 
     if st.button("Guardar Movimiento", type="primary", key="tab2_btn_guardar"):
-      if monto_mov > 0:
+      if monto_mov > 0 and cat_mov.strip():
         try:
+          if es_nueva_cat:
+            cat_nombre_clean = cat_mov.strip()
+            existe_cat = False
+            if not df_categorias.empty and "nombre" in df_categorias.columns:
+              existe_cat = cat_nombre_clean in df_categorias["nombre"].values
+
+            if not existe_cat:
+              supabase.table("categorias").insert({
+                  "nombre": cat_nombre_clean,
+                  "tipo_general": tipo_general,
+                  "clase_503020": clase_custom,
+                  "limite_mensual": 0,
+              }).execute()
+            cat_mov = cat_nombre_clean
+
           supabase.table("transacciones").insert({
               "fecha": str(fecha_mov),
               "tipo": tipo_mov,
@@ -526,10 +600,13 @@ with tab2:
         except Exception as e:
           st.error(f"Error al guardar movimiento: {e}")
       else:
-        st.warning("El monto debe ser mayor a 0.")
+        if not cat_mov.strip():
+          st.warning("Escribí el nombre de la categoría.")
+        else:
+          st.warning("El monto debe ser mayor a 0.")
 
   # -----------------------------------------------
-  # OPCIÓN B: CONFIGURAR REGULA FIJA RECURRENTE
+  # OPCIÓN B: CONFIGURAR REGLA FIJA RECURRENTE
   # -----------------------------------------------
   else:
     st.subheader("📅 Configurar Regla Fija Recurrente (Para Todos los Meses)")
@@ -545,15 +622,37 @@ with tab2:
         key="tab2_r_tipo",
     )
     tipo_gen_r = "Ingreso" if "Ingreso" in r_tipo else "Gasto"
+
     opciones_cat_r = (
         df_categorias[df_categorias["tipo_general"] == tipo_gen_r][
             "nombre"
         ].tolist()
         if not df_categorias.empty and "tipo_general" in df_categorias.columns
-        else ["Sin categorías"]
+        else []
+    )
+    opciones_cat_r_select = ["➕ [ Crear nueva categoría... ]"] + opciones_cat_r
+
+    r_cat_sel = st.selectbox(
+        "Categoría", opciones_cat_r_select, key="tab2_r_cat_sel"
     )
 
-    r_cat = st.selectbox("Categoría", opciones_cat_r, key="tab2_r_cat")
+    if r_cat_sel == "➕ [ Crear nueva categoría... ]":
+      col_nr1, col_nr2 = st.columns([2, 1])
+      with col_nr1:
+        r_cat = st.text_input(
+            "Escribí el nombre de la nueva categoría:", key="tab2_custom_cat_b"
+        )
+      with col_nr2:
+        r_clase_custom = st.selectbox(
+            "Clasificación 50/30/20",
+            ["50-Necesidad", "30-Deseo", "Ingreso", "Ahorro/Inversión"],
+            key="tab2_custom_clase_b",
+        )
+      r_es_nueva_cat = True
+    else:
+      r_cat = r_cat_sel
+      r_es_nueva_cat = False
+
     r_monto = st.number_input(
         "Monto ($)", min_value=0.0, step=1000.0, key="tab2_r_monto"
     )
@@ -576,8 +675,23 @@ with tab2:
         type="primary",
         key="tab2_btn_guardar_rec",
     ):
-      if r_monto > 0:
+      if r_monto > 0 and r_cat.strip():
         try:
+          if r_es_nueva_cat:
+            r_cat_clean = r_cat.strip()
+            existe_cat = False
+            if not df_categorias.empty and "nombre" in df_categorias.columns:
+              existe_cat = r_cat_clean in df_categorias["nombre"].values
+
+            if not existe_cat:
+              supabase.table("categorias").insert({
+                  "nombre": r_cat_clean,
+                  "tipo_general": tipo_gen_r,
+                  "clase_503020": r_clase_custom,
+                  "limite_mensual": 0,
+              }).execute()
+            r_cat = r_cat_clean
+
           supabase.table("recurrentes").insert({
               "tipo": r_tipo,
               "categoria": r_cat,
@@ -593,7 +707,10 @@ with tab2:
         except Exception as e:
           st.error(f"Error al crear regla fija: {e}")
       else:
-        st.warning("El monto debe ser mayor a 0.")
+        if not r_cat.strip():
+          st.warning("Escribí el nombre de la categoría.")
+        else:
+          st.warning("El monto debe ser mayor a 0.")
 
 # ==========================================
 # PESTAÑA 3: AUTOMATIZACIONES LABORALES
