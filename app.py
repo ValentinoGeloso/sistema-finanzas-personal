@@ -85,6 +85,9 @@ df_vencimientos = cargar_tabla("vencimientos", order_by="fecha_vencimiento")
 df_deudas = cargar_tabla("deudas", order_by="id", desc=True)
 df_recurrentes = cargar_tabla("recurrentes")
 
+if not df_recurrentes.empty and "frecuencia_meses" not in df_recurrentes.columns:
+    df_recurrentes["frecuencia_meses"] = 1
+
 # --- PROCESAMIENTO DE TRANSACCIONES REALES ---
 if (
     not df_transacciones.empty
@@ -139,7 +142,7 @@ else:
   )
 
 
-# --- FUNCIÓN DE PROYECCIÓN DE RECURRENTES POR MES ---
+# --- FUNCIÓN DE PROYECCIÓN DE RECURRENTES (CON FRECUENCIA) ---
 def obtener_recurrentes_para_mes(año, mes):
   if df_recurrentes.empty:
     return pd.DataFrame()
@@ -160,41 +163,48 @@ def obtener_recurrentes_para_mes(año, mes):
         if pd.notna(row.get("fecha_fin"))
         else None
     )
+    
+    frec = int(row.get("frecuencia_meses", 1)) if pd.notna(row.get("frecuencia_meses")) else 1
+    meses_diff = (año - f_ini.year) * 12 + (mes - f_ini.month)
 
     if f_ini <= fin_mes and (f_fin is None or f_fin >= inicio_mes):
-      dia_m = int(row["dia_mes"]) if pd.notna(row.get("dia_mes")) else 1
-      dia_real = min(dia_m, ultimo_dia_mes)
-      fecha_evento = date(año, mes, dia_real)
+      if meses_diff >= 0 and (meses_diff % frec) == 0:
+        dia_m = int(row["dia_mes"]) if pd.notna(row.get("dia_mes")) else 1
+        dia_real = min(dia_m, ultimo_dia_mes)
+        fecha_evento = date(año, mes, dia_real)
 
-      c_tot = (
-          int(row["cuotas_totales"])
-          if pd.notna(row.get("cuotas_totales"))
-          else None
-      )
+        c_tot = (
+            int(row["cuotas_totales"])
+            if pd.notna(row.get("cuotas_totales"))
+            else None
+        )
 
-      desc_base = str(row.get("descripcion", ""))
-      if c_tot and c_tot > 0:
-        desc_final = f"{desc_base} (Cuota en plan de {c_tot})"
-      else:
-        desc_final = f"{desc_base} (Fijo)" if desc_base else "Fijo Proyectado"
+        desc_base = str(row.get("descripcion", ""))
+        if c_tot and c_tot > 0:
+          desc_final = f"{desc_base} (Cuota en plan de {c_tot})"
+        else:
+          if frec > 1:
+            desc_final = f"{desc_base} (Fijo - Cada {frec} meses)" if desc_base else "Fijo Proyectado"
+          else:
+            desc_final = f"{desc_base} (Fijo)" if desc_base else "Fijo Proyectado"
 
-      recurrentes_validos.append({
-          "id_recurrente": row["id"],
-          "fecha": fecha_evento,
-          "tipo": row["tipo"],
-          "categoria": row["categoria"],
-          "monto": float(row["monto"]),
-          "descripcion": desc_final,
-          "mes_año": f"{año}-{mes:02d}",
-          "tipo_general": (
-              "Ingreso" if "Ingreso" in str(row["tipo"]) else "Gasto"
-          ),
-          "es_proyectado": True,
-      })
+        recurrentes_validos.append({
+            "id_recurrente": row["id"],
+            "fecha": fecha_evento,
+            "tipo": row["tipo"],
+            "categoria": row["categoria"],
+            "monto": float(row["monto"]),
+            "descripcion": desc_final,
+            "mes_año": f"{año}-{mes:02d}",
+            "tipo_general": (
+                "Ingreso" if "Ingreso" in str(row["tipo"]) else "Gasto"
+            ),
+            "es_proyectado": True,
+        })
   return pd.DataFrame(recurrentes_validos)
 
 
-# --- CÁLCULO DE PRÓXIMO VENCIMIENTO DE FIJOS Y CUOTAS ---
+# --- CÁLCULO DE VENCIMIENTOS (CON FRECUENCIA BIMESTRAL/ETC) ---
 def calcular_vencimientos_fijos(hoy=None):
   if hoy is None:
     hoy = date.today()
@@ -215,6 +225,7 @@ def calcular_vencimientos_fijos(hoy=None):
     monto = float(row["monto"])
     desc = str(row.get("descripcion", ""))
     id_rec = row["id"]
+    frec = int(row.get("frecuencia_meses", 1)) if pd.notna(row.get("frecuencia_meses")) else 1
 
     c_tot = (
         int(row["cuotas_totales"])
@@ -241,19 +252,28 @@ def calcular_vencimientos_fijos(hoy=None):
     cur_year = hoy.year
     cur_month = hoy.month
 
-    max_days = calendar.monthrange(cur_year, cur_month)[1]
-    due_date_curr = date(cur_year, cur_month, min(dia_m, max_days))
+    # Buscar el ciclo de facturación actual según la frecuencia
+    meses_diff = (cur_year - f_ini.year) * 12 + (cur_month - f_ini.month)
+    if meses_diff < 0:
+        cy = f_ini.year
+        cm = f_ini.month
+    else:
+        resto = meses_diff % frec
+        if resto == 0:
+            cy = cur_year
+            cm = cur_month
+        else:
+            meses_falt = frec - resto
+            cy = cur_year + (cur_month + meses_falt - 1) // 12
+            cm = (cur_month + meses_falt - 1) % 12 + 1
 
-    if due_date_curr < f_ini or (f_fin and due_date_curr > f_fin):
-      if due_date_curr < f_ini:
-        cur_year = f_ini.year
-        cur_month = f_ini.month
-        max_days = calendar.monthrange(cur_year, cur_month)[1]
-        due_date_curr = date(cur_year, cur_month, min(dia_m, max_days))
-      else:
-        continue
+    max_days = calendar.monthrange(cy, cm)[1]
+    due_date_curr = date(cy, cm, min(dia_m, max_days))
 
-    mes_str_curr = f"{cur_year}-{cur_month:02d}"
+    if f_fin and due_date_curr > f_fin:
+      continue
+
+    mes_str_curr = f"{cy}-{cm:02d}"
 
     pagado_este_mes = False
     if not df_transacciones.empty and "mes_año" in df_transacciones.columns:
@@ -282,13 +302,16 @@ def calcular_vencimientos_fijos(hoy=None):
           "cuotas_pagadas": c_pag,
       })
     else:
-      next_year = cur_year + 1 if cur_month == 12 else cur_year
-      next_month = 1 if cur_month == 12 else cur_month + 1
-      max_days_next = calendar.monthrange(next_year, next_month)[1]
-      due_date_next = date(next_year, next_month, min(dia_m, max_days_next))
-      mes_str_next = f"{next_year}-{next_month:02d}"
+      ny = cy + (cm + frec - 1) // 12
+      nm = (cm + frec - 1) % 12 + 1
+      max_days_next = calendar.monthrange(ny, nm)[1]
+      due_date_next = date(ny, nm, min(dia_m, max_days_next))
+      mes_str_next = f"{ny}-{nm:02d}"
+      
+      if f_fin and due_date_next > f_fin:
+          continue
+          
       dias_restantes = (due_date_next - hoy).days
-
       next_cuota_txt = f" (Cuota {c_pag + 1}/{c_tot})" if c_tot else ""
       vencimientos_info.append({
           "id_recurrente": id_rec,
@@ -407,7 +430,7 @@ with tab1:
 
   col1, col2, col3, col4 = st.columns(4)
   col1.metric("Ingresos Totales (Reales + Fijos)", f"${ingresos_totales:,.2f}")
-  col2.metric("Gastos Totales (Reales + Fijos)", f"${gastos_totales:,.2f}")
+  col2.metric("Gastos (Historial + Proyectados Pend.)", f"${gastos_totales:,.2f}", help="Suma los gastos que ya pagaste (historial) y proyecta lo que aún falta pagar este mes.")
   col3.metric(
       "Deudas Pendientes (Debo)",
       f"${deudas_pend_mes:,.2f}",
@@ -640,13 +663,13 @@ with tab2:
           st.warning("El monto debe ser mayor a 0.")
 
   # -----------------------------------------------
-  # OPCIÓN B: CONFIGURAR REGLA FIJA RECURRENTE
+  # OPCIÓN B: CONFIGURAR REGLA FIJA RECURRENTE (Con Frecuencia)
   # -----------------------------------------------
   elif "Ingreso Fijo" in sub_tab2:
-    st.subheader("📅 Configurar Regla Fija Recurrente (Para Todos los Meses)")
+    st.subheader("📅 Configurar Regla Fija Recurrente")
     st.caption(
         "Esta carga **NO marca el pago como hecho**, sino que establece el día"
-        " de vencimiento para que se proyecte en todos los meses."
+        " de vencimiento para que se proyecte al futuro."
     )
 
     r_tipo = st.selectbox(
@@ -686,21 +709,38 @@ with tab2:
       r_cat = r_cat_sel
       r_es_nueva_cat = False
 
-    r_monto = st.number_input(
-        "Monto ($)", min_value=0.0, step=1000.0, key="tab2_r_monto"
-    )
-    r_dia = st.number_input(
-        "Día del mes en que vence / se cobra (1 a 31)",
-        min_value=1,
-        max_value=31,
-        value=10,
-        key="tab2_r_dia",
-    )
-    r_fecha_ini = st.date_input(
-        "Aplica a partir de", value=date.today(), key="tab2_r_fecha_ini"
-    )
+    col_rm1, col_rm2 = st.columns(2)
+    with col_rm1:
+      r_monto = st.number_input(
+          "Monto ($)", min_value=0.0, step=1000.0, key="tab2_r_monto"
+      )
+    with col_rm2:
+      opciones_frec = {
+          "Mensual (Todos los meses)": 1,
+          "Bimestral (Ej: Patente, 1 cada 2 meses)": 2,
+          "Trimestral (1 cada 3 meses)": 3,
+          "Semestral (2 por año)": 6,
+          "Anual (1 por año)": 12
+      }
+      r_frec_str = st.selectbox("Frecuencia", list(opciones_frec.keys()), key="tab2_r_frec")
+      r_frec = opciones_frec[r_frec_str]
+
+    col_rd1, col_rd2 = st.columns(2)
+    with col_rd1:
+        r_dia = st.number_input(
+            "Día del mes de vencimiento (1 a 31)",
+            min_value=1,
+            max_value=31,
+            value=10,
+            key="tab2_r_dia",
+        )
+    with col_rd2:
+        r_fecha_ini = st.date_input(
+            "Aplica a partir de", value=date.today(), key="tab2_r_fecha_ini"
+        )
+        
     r_desc = st.text_input(
-        "Descripción (Ej: Alquiler, Internet, Gimnasio)", key="tab2_r_desc"
+        "Descripción (Ej: Alquiler, Internet, Patente Corsa)", key="tab2_r_desc"
     )
 
     if st.button(
@@ -732,10 +772,10 @@ with tab2:
               "dia_mes": r_dia,
               "fecha_inicio": str(r_fecha_ini),
               "descripcion": r_desc,
+              "frecuencia_meses": r_frec
           }).execute()
           recargar_app(
-              f"Gasto/Ingreso fijo configurado para repetirse los días {r_dia}"
-              " de cada mes."
+              f"Gasto configurado exitosamente."
           )
         except Exception as e:
           st.error(f"Error al crear regla fija: {e}")
@@ -864,6 +904,7 @@ with tab2:
               "descripcion": c_desc,
               "cuotas_totales": int(c_totales),
               "cuotas_pagadas": int(c_pagadas),
+              "frecuencia_meses": 1
           }).execute()
           recargar_app(f"Plan de cuotas para '{c_desc}' guardado exitosamente.")
         except Exception as e:
@@ -1328,14 +1369,13 @@ with tab4:
         st.info("No hay vencimientos eventuales cargados.")
 
   # ------------------------------------
-  # 2. PLANES DE CUOTAS ACTIVOS (EDITABLE EN DIRECTO)
+  # 2. PLANES DE CUOTAS ACTIVOS
   # ------------------------------------
   elif "Planes de Cuotas" in sub_t4:
     st.subheader("🚗 Planes de Financiación en Cuotas Activos")
     st.info(
-        "✏️ **Planilla Editable de Cuotas:** Podés cambiar directamente el **Monto de la Cuota** si te aplicaron intereses. "
-        "✅ **Tranquilidad:** Al cambiar el monto de la cuota acá, los pagos viejos que ya guardaste NO se van a modificar en tu historial, "
-        "solo se va a calcular todo el saldo restante con el precio nuevo."
+        "✏️ **Planilla Editable:** Podés cambiar directamente el **Monto de la Cuota** si te aplicaron intereses. "
+        "✅ Al cambiarlo acá, los recibos viejos del Historial no se modifican, pero las cuotas restantes empezarán a usar este valor."
     )
 
     if not df_recurrentes.empty and "cuotas_totales" in df_recurrentes.columns:
@@ -1408,10 +1448,7 @@ with tab4:
                     "fecha_fin": nueva_f_fin,
                 }).eq("id", row["id"]).execute()
 
-              recargar_app(
-                  "Planes de cuotas actualizados correctamente con los nuevos"
-                  " valores."
-              )
+              recargar_app("Planes de cuotas actualizados.")
             except Exception as e:
               st.error(f"Error al actualizar cuotas: {e}")
 
@@ -1429,7 +1466,7 @@ with tab4:
               except Exception as e:
                 st.error("Error al eliminar plan.")
 
-        st.warning("⚠️ **Recordatorio importante:** Si tocás el botón rojo de *Eliminar Plan de Cuotas* porque lo habías cargado mal, no te olvides de ir a la solapa de **📝 Historial** para borrar el pago en sí, si es que ya le habías dado al botón de 'Marcar Pagado'.")
+        st.warning("⚠️ **ATENCIÓN:** Si tocaste el botón rojo de *Eliminar Plan de Cuotas* porque te habías equivocado al cargarlo, recordá ir también a la pestaña **📝 Historial** para borrar el recibo del pago, así no te suma dinero fantasma en tu total del mes.")
 
         st.markdown("---")
         st.markdown("##### 📊 **Tarjetas de Avance Visual:**")
@@ -1700,7 +1737,7 @@ with tab5:
 
     st.markdown("---")
     st.subheader("🗑️ Eliminar Movimiento del Historial")
-    st.caption("Si te equivocaste al marcar un gasto como pagado, borralo desde acá para que se reste correctamente de tus totales.")
+    st.info("💡 **Solución para Gastos Fantasmas:** Si en tu panel aparece un monto de más porque marcaste un gasto fijo como pagado por error, buscalo en esta lista y **borralo**. El dinero total se va a descontar automáticamente.")
     
     opciones_borrar = {
         int(row["id"]): (
@@ -1713,7 +1750,7 @@ with tab5:
     col_del_1, col_del_2 = st.columns([2, 1])
     with col_del_1:
       id_sel_borrar = st.selectbox(
-          "Seleccioná el movimiento que querés borrar:",
+          "Seleccioná el recibo/movimiento que querés borrar:",
           options=list(opciones_borrar.keys()),
           format_func=lambda x: opciones_borrar[x],
           key="tab5_sel_borrar",
@@ -1737,7 +1774,7 @@ with tab5:
     st.info("No hay historial disponible.")
 
 # ==========================================
-# PESTAÑA 6: GESTIÓN DE FIJOS Y CONFIGURACIÓN (EDITABLE EN DIRECTO)
+# PESTAÑA 6: GESTIÓN DE FIJOS Y CONFIGURACIÓN
 # ==========================================
 with tab6:
   st.header("⚙️ Gestión de Fijos, Cuotas y Categorías")
@@ -1759,6 +1796,7 @@ with tab6:
           "fecha_fin",
           "fecha_inicio",
           "dia_mes",
+          "frecuencia_meses"
       ]:
         if c not in df_rec_full.columns:
           df_rec_full[c] = None
@@ -1774,6 +1812,7 @@ with tab6:
               "tipo",
               "categoria",
               "monto",
+              "frecuencia_meses",
               "dia_mes",
               "cuotas_pagadas",
               "cuotas_totales",
@@ -1791,6 +1830,9 @@ with tab6:
               ),
               "monto": st.column_config.NumberColumn(
                   "Monto ($)", min_value=0.0, format="$%f"
+              ),
+              "frecuencia_meses": st.column_config.NumberColumn(
+                  "Frec. (Meses)", min_value=1, max_value=12, step=1
               ),
               "dia_mes": st.column_config.NumberColumn(
                   "Día Mes", min_value=1, max_value=31
@@ -1836,11 +1878,17 @@ with tab6:
                   and str(row["fecha_fin"]).strip() not in ["None", "nan", ""]
                   else None
               )
+              frec_val = (
+                  int(row["frecuencia_meses"])
+                  if pd.notna(row["frecuencia_meses"]) and int(row["frecuencia_meses"]) > 0
+                  else 1
+              )
 
               supabase.table("recurrentes").update({
                   "tipo": str(row["tipo"]),
                   "categoria": str(row["categoria"]),
                   "monto": float(row["monto"]),
+                  "frecuencia_meses": frec_val,
                   "dia_mes": int(row["dia_mes"]),
                   "fecha_inicio": str(row["fecha_inicio"]),
                   "fecha_fin": f_fin_val,
@@ -1872,7 +1920,7 @@ with tab6:
             except Exception as e:
               st.error("Error al eliminar.")
               
-      st.warning("⚠️ Si tocaste *Eliminar Fijo/Cuota* porque era un error, andá a la pestaña **📝 Historial & Excel** para borrar también el ticket del pago generado.")
+      st.warning("⚠️ Recuerda que si tocaste *Eliminar Fijo/Cuota* también deberás ir a la pestaña **📝 Historial** para borrar el comprobante real de pago si es que ya lo habías marcado como pagado por error.")
 
     else:
       st.info("No hay movimientos fijos ni cuotas configurados aún.")
