@@ -397,6 +397,7 @@ with tab1:
 
   # CÁLCULO DE AAA PENDIENTE FILTRADO POR SU FECHA DE COBRO ESTIMADA (PRIMER VIERNES DEL MES SIGUIENTE)
   aaa_pend = 0.0
+  df_aaa_este_mes = pd.DataFrame()
   if not df_partidos_aaa.empty and "estado" in df_partidos_aaa.columns:
       df_aaa_pend = df_partidos_aaa[df_partidos_aaa["estado"] == "Pendiente"].copy()
       if not df_aaa_pend.empty:
@@ -409,7 +410,7 @@ with tab1:
           df_aaa_este_mes = df_aaa_pend[df_aaa_pend["mes_cobro_estimado"] == mes_seleccionado]
           if not df_aaa_este_mes.empty:
               bruto_aaa_mes = df_aaa_este_mes["monto"].sum()
-              aaa_pend = max(0, bruto_aaa_mes - 15000) # Se descuenta la cuota de $15.000 si se cobra este mes
+              aaa_pend = max(0, bruto_aaa_mes - 15000)
 
   ingresos_pendientes = ingresos_fijos_pend + cobrar_pend_mes + aaa_pend
   proyeccion_ingresos = ingresos_reales + ingresos_pendientes
@@ -425,7 +426,7 @@ with tab1:
   venc_pend = 0.0
   if not df_vencimientos.empty and "estado" in df_vencimientos.columns:
       mes_año_v = pd.to_datetime(df_vencimientos["fecha_vencimiento"]).dt.strftime("%Y-%m")
-      venc_pend = df_vencimientos[(mes_año_v == mes_seleccionado) & (df_vencimientos["estado"] == "Pendiente")]["monto"].sum()
+      venc_pend = df_vencimientos[(mes_año_v == mes_seleccionado) & (mes_vencimientos["estado"] == "Pendiente")]["monto"].sum()
 
   gastos_pendientes = gastos_fijos_pend + deudas_pend_mes + venc_pend
   proyeccion_gastos = gastos_reales + gastos_pendientes
@@ -440,10 +441,31 @@ with tab1:
   c_i2.metric("Ingresos Pendientes (A cobrar)", f"${ingresos_pendientes:,.2f}", help="Suma de fijos pendientes, arbitraje AAA que se cobra este mes y cuentas que te deben.")
   c_i3.metric("Total Proyección Ingresos", f"${proyeccion_ingresos:,.2f}")
 
+  # --- EXPANDER PARA AUDITAR DE DÓNDE SALEN LOS INGRESOS PENDIENTES ---
+  with st.expander("🔍 Ver de dónde salen estos Ingresos Pendientes (Detalle)"):
+      df_fijos_ing_pend = df_fijos_pendientes[df_fijos_pendientes["tipo_general"] == "Ingreso"] if not df_fijos_pendientes.empty else pd.DataFrame()
+      if not df_fijos_ing_pend.empty:
+          st.markdown("##### 📅 Ingresos Fijos / Recurrentes Pendientes:")
+          st.dataframe(df_fijos_ing_pend[["categoria", "descripcion", "monto"]], hide_index=True, use_container_width=True)
+      
+      df_cobrar_mes = pd.DataFrame()
+      if not df_deudas.empty and "mes_año" in df_deudas.columns:
+          df_cobrar_mes = df_deudas[(df_deudas["mes_año"] == mes_seleccionado) & (df_deudas["tipo"] == "Me deben") & (df_deudas["estado"] == "Pendiente")]
+      if not df_cobrar_mes.empty:
+          st.markdown("##### 📩 Cuentas por Cobrar ('Me deben'):")
+          st.dataframe(df_cobrar_mes[["persona", "detalle", "monto"]], hide_index=True, use_container_width=True)
+
+      if not df_aaa_este_mes.empty:
+          st.markdown(f"##### ⚽ Partidos AAA a cobrar este mes (Bruto: ${df_aaa_este_mes['monto'].sum():,.2f} - Cuota AAA: $15,000 = Neto: ${aaa_pend:,.2f}):")
+          st.dataframe(df_aaa_este_mes[["fecha", "detalle", "monto"]], hide_index=True, use_container_width=True)
+          
+      if df_fijos_ing_pend.empty and df_cobrar_mes.empty and df_aaa_este_mes.empty:
+          st.info("No hay ingresos pendientes registrados para este mes.")
+
   st.markdown("### 🔴 2. Proyección de Gastos")
   c_g1, c_g2, c_g3 = st.columns(3)
   c_g1.metric("Gastos (Pagados)", f"${gastos_reales:,.2f}")
-  c_g2.metric("Gastos Pendientes (A pagar)", f"${gastos_pendientes:,.2f}", help="Suma de fijos pendientes, cuotas, deudas a Manuel y vencimientos eventuales.")
+  c_g2.metric("Gastos Pendientes (A pagar)", f"${gastos_pendientes:,.2f}", help="Suma de fijos pendientes, cuotas, deudas y vencimientos eventuales.")
   c_g3.metric("Total Proyección Gastos", f"${proyeccion_gastos:,.2f}")
 
   st.markdown("---")
@@ -1764,7 +1786,7 @@ with tab6:
     st.subheader("✏️ Planilla Editable de Fijos y Planes de Cuotas")
     st.caption(
         "Podés modificar montos, días de vencimiento, descripciones o cuotas y"
-        " hacer clic en guardar."
+        " hacer clic in guardar."
     )
 
     if not df_recurrentes.empty:
