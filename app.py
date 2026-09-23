@@ -395,11 +395,21 @@ with tab1:
   if not df_deudas.empty and "mes_año" in df_deudas.columns:
     cobrar_pend_mes = df_deudas[(df_deudas["mes_año"] == mes_seleccionado) & (df_deudas["tipo"] == "Me deben") & (df_deudas["estado"] == "Pendiente")]["monto"].sum()
 
+  # CÁLCULO DE AAA PENDIENTE FILTRADO POR SU FECHA DE COBRO ESTIMADA (PRIMER VIERNES DEL MES SIGUIENTE)
   aaa_pend = 0.0
   if not df_partidos_aaa.empty and "estado" in df_partidos_aaa.columns:
-      df_aaa_pend = df_partidos_aaa[df_partidos_aaa["estado"] == "Pendiente"]
+      df_aaa_pend = df_partidos_aaa[df_partidos_aaa["estado"] == "Pendiente"].copy()
       if not df_aaa_pend.empty:
-          aaa_pend = max(0, df_aaa_pend["monto"].sum() - 15000) # Se descuenta la cuota de $15.000 automáticamente
+          def calcular_mes_cobro_aaa(row):
+              f_partido = pd.to_datetime(row["fecha"]).date()
+              f_cobro = primer_viernes_mes_siguiente(f_partido)
+              return f"{f_cobro.year}-{f_cobro.month:02d}"
+          
+          df_aaa_pend["mes_cobro_estimado"] = df_aaa_pend.apply(calcular_mes_cobro_aaa, axis=1)
+          df_aaa_este_mes = df_aaa_pend[df_aaa_pend["mes_cobro_estimado"] == mes_seleccionado]
+          if not df_aaa_este_mes.empty:
+              bruto_aaa_mes = df_aaa_este_mes["monto"].sum()
+              aaa_pend = max(0, bruto_aaa_mes - 15000) # Se descuenta la cuota de $15.000 si se cobra este mes
 
   ingresos_pendientes = ingresos_fijos_pend + cobrar_pend_mes + aaa_pend
   proyeccion_ingresos = ingresos_reales + ingresos_pendientes
@@ -427,7 +437,7 @@ with tab1:
   st.markdown("### 🟢 1. Proyección de Ingresos")
   c_i1, c_i2, c_i3 = st.columns(3)
   c_i1.metric("Ingresos Actuales (En mano)", f"${ingresos_reales:,.2f}")
-  c_i2.metric("Ingresos Pendientes (A cobrar)", f"${ingresos_pendientes:,.2f}", help="Suma de fijos pendientes, arbitraje AAA y cuentas que te deben.")
+  c_i2.metric("Ingresos Pendientes (A cobrar)", f"${ingresos_pendientes:,.2f}", help="Suma de fijos pendientes, arbitraje AAA que se cobra este mes y cuentas que te deben.")
   c_i3.metric("Total Proyección Ingresos", f"${proyeccion_ingresos:,.2f}")
 
   st.markdown("### 🔴 2. Proyección de Gastos")
