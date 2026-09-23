@@ -52,6 +52,15 @@ def recargar_app(mensaje="✅ Acción completada"):
   st.rerun()
 
 
+def sumar_meses(fecha_base, cantidad_meses):
+  year = fecha_base.year
+  month = fecha_base.month + cantidad_meses - 1
+  year += month // 12
+  month = (month % 12) + 1
+  max_days = calendar.monthrange(year, month)[1]
+  return date(year, month, min(fecha_base.day, max_days))
+
+
 # --- CARGA ROBUSTA DE DATOS ---
 def cargar_tabla(nombre_tabla, order_by="id", desc=False):
   for intento in range(3):
@@ -157,17 +166,30 @@ def obtener_recurrentes_para_mes(año, mes):
       dia_real = min(dia_m, ultimo_dia_mes)
       fecha_evento = date(año, mes, dia_real)
 
+      c_tot = (
+          int(row["cuotas_totales"])
+          if pd.notna(row.get("cuotas_totales"))
+          else None
+      )
+      c_pag = (
+          int(row["cuotas_pagadas"])
+          if pd.notna(row.get("cuotas_pagadas"))
+          else 0
+      )
+
+      desc_base = str(row.get("descripcion", ""))
+      if c_tot and c_tot > 0:
+        desc_final = f"{desc_base} (Cuota en plan de {c_tot})"
+      else:
+        desc_final = f"{desc_base} (Fijo)" if desc_base else "Fijo Proyectado"
+
       recurrentes_validos.append({
           "id_recurrente": row["id"],
           "fecha": fecha_evento,
           "tipo": row["tipo"],
           "categoria": row["categoria"],
           "monto": float(row["monto"]),
-          "descripcion": (
-              f"{row['descripcion']} (Fijo)"
-              if row.get("descripcion")
-              else "Fijo Proyectado"
-          ),
+          "descripcion": desc_final,
           "mes_año": f"{año}-{mes:02d}",
           "tipo_general": (
               "Ingreso" if "Ingreso" in str(row["tipo"]) else "Gasto"
@@ -177,7 +199,7 @@ def obtener_recurrentes_para_mes(año, mes):
   return pd.DataFrame(recurrentes_validos)
 
 
-# --- CÁLCULO DE PRÓXIMO VENCIMIENTO DE FIJOS ---
+# --- CÁLCULO DE PRÓXIMO VENCIMIENTO DE FIJOS Y CUOTAS ---
 def calcular_vencimientos_fijos(hoy=None):
   if hoy is None:
     hoy = date.today()
@@ -198,6 +220,17 @@ def calcular_vencimientos_fijos(hoy=None):
     monto = float(row["monto"])
     desc = str(row.get("descripcion", ""))
     id_rec = row["id"]
+
+    c_tot = (
+        int(row["cuotas_totales"])
+        if pd.notna(row.get("cuotas_totales"))
+        else None
+    )
+    c_pag = (
+        int(row["cuotas_pagadas"])
+        if pd.notna(row.get("cuotas_pagadas"))
+        else 0
+    )
 
     f_ini = (
         pd.to_datetime(row["fecha_inicio"]).date()
@@ -237,6 +270,8 @@ def calcular_vencimientos_fijos(hoy=None):
       if not df_pagado.empty:
         pagado_este_mes = True
 
+    cuota_txt = f" (Cuota {c_pag + 1}/{c_tot})" if c_tot else ""
+
     if not pagado_este_mes:
       dias_restantes = (due_date_curr - hoy).days
       vencimientos_info.append({
@@ -245,9 +280,11 @@ def calcular_vencimientos_fijos(hoy=None):
           "monto": monto,
           "fecha_vencimiento": due_date_curr,
           "dias_restantes": dias_restantes,
-          "descripcion": desc,
+          "descripcion": f"{desc}{cuota_txt}",
           "mes_año": mes_str_curr,
           "estado_pago": "Pendiente",
+          "cuotas_totales": c_tot,
+          "cuotas_pagadas": c_pag,
       })
     else:
       next_year = cur_year + 1 if cur_month == 12 else cur_year
@@ -257,15 +294,18 @@ def calcular_vencimientos_fijos(hoy=None):
       mes_str_next = f"{next_year}-{next_month:02d}"
       dias_restantes = (due_date_next - hoy).days
 
+      next_cuota_txt = f" (Cuota {c_pag + 1}/{c_tot})" if c_tot else ""
       vencimientos_info.append({
           "id_recurrente": id_rec,
           "categoria": cat,
           "monto": monto,
           "fecha_vencimiento": due_date_next,
           "dias_restantes": dias_restantes,
-          "descripcion": desc,
+          "descripcion": f"{desc}{next_cuota_txt}",
           "mes_año": mes_str_next,
           "estado_pago": "Pagado este mes",
+          "cuotas_totales": c_tot,
+          "cuotas_pagadas": c_pag,
       })
 
   vencimientos_info.sort(key=lambda x: x["fecha_vencimiento"])
@@ -281,15 +321,15 @@ lista_todas_categorias = (
 # --- ESTRUCTURA DE PESTAÑAS ---
 st.title("📈 Mi Ecosistema Financiero Pro")
 st.caption(
-    "💡 *Tus **Ingresos y Gastos Fijos** se proyectan automáticamente en todos"
-    " los meses futuros y alimentan tus vencimientos.*"
+    "💡 *Tus **Ingresos, Gastos Fijos y Planes en Cuotas** se proyectan"
+    " automáticamente en todos los meses futuros.*"
 )
 
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "📊 Dashboards & Proyección",
     "➕ Carga Rápida",
     "💼 Automatizaciones",
-    "🎯 Metas & Vencimientos",
+    "🎯 Metas, Vencimientos & Cuotas",
     "📝 Historial & Excel",
     "⚙️ Fijos y Configuración",
 ])
@@ -459,7 +499,7 @@ with tab1:
   )
 
 # ==========================================
-# PESTAÑA 2: CARGA RÁPIDA (CON CREACIÓN DE CATEGORÍAS)
+# PESTAÑA 2: CARGA RÁPIDA (CON SOPORTE PARA CUOTAS)
 # ==========================================
 with tab2:
   st.header("📝 Carga Rápida de Operaciones")
@@ -492,9 +532,7 @@ with tab2:
                 "clase_503020": nc_clase,
                 "limite_mensual": 0,
             }).execute()
-            recargar_app(
-                f"Categoría '{nc_nombre.strip()}' creada con éxito."
-            )
+            recargar_app(f"Categoría '{nc_nombre.strip()}' creada con éxito.")
           except Exception as e:
             st.error(f"Error al crear categoría: {e}")
         else:
@@ -506,7 +544,8 @@ with tab2:
       "¿Qué querés cargar?",
       [
           "💸 Registrar Pago / Movimiento Puntual",
-          "📅 Configurar Nuevo Gasto / Ingreso Fijo Recurrente",
+          "📅 Configurar Nuevo Gasto / Ingreso Fijo",
+          "🚗 Configurar Gasto en Cuotas (Auto, Electro, etc.)",
       ],
       horizontal=True,
       key="tab2_sub_option",
@@ -606,14 +645,13 @@ with tab2:
           st.warning("El monto debe ser mayor a 0.")
 
   # -----------------------------------------------
-  # OPCIÓN B: CONFIGURAR REGLA FIJA RECURRENTE
+  # OPCIÓN B: CONFIGURAR REGULA FIJA RECURRENTE
   # -----------------------------------------------
-  else:
+  elif "Ingreso Fijo" in sub_tab2:
     st.subheader("📅 Configurar Regla Fija Recurrente (Para Todos los Meses)")
     st.caption(
         "Esta carga **NO marca el pago como hecho**, sino que establece el día"
-        " de vencimiento para que se proyecte en todos los meses y te avise en"
-        " Vencimientos."
+        " de vencimiento para que se proyecte en todos los meses."
     )
 
     r_tipo = st.selectbox(
@@ -711,6 +749,133 @@ with tab2:
           st.warning("Escribí el nombre de la categoría.")
         else:
           st.warning("El monto debe ser mayor a 0.")
+
+  # -----------------------------------------------
+  # OPCIÓN C: PLAN DE FINANCIACIÓN EN CUOTAS
+  # -----------------------------------------------
+  else:
+    st.subheader("🚗 Configurar Gasto en Cuotas (Auto, Electrodomésticos, etc.)")
+    st.caption(
+        "Ingresá el valor mensual por cuota, cuántas cuotas pagaste y cuántas"
+        " te faltan. La app **calculará automáticamente cuándo terminás de"
+        " pagar**."
+    )
+
+    opciones_cat_cuotas = (
+        df_categorias[df_categorias["tipo_general"] == "Gasto"][
+            "nombre"
+        ].tolist()
+        if not df_categorias.empty and "tipo_general" in df_categorias.columns
+        else ["Mantenimiento Corsa"]
+    )
+    opciones_cat_c_select = [
+        "➕ [ Crear nueva categoría... ]"
+    ] + opciones_cat_cuotas
+
+    c_cat_sel = st.selectbox(
+        "Categoría del Gasto", opciones_cat_c_select, key="tab2_c_cat_sel"
+    )
+
+    if c_cat_sel == "➕ [ Crear nueva categoría... ]":
+      c_cat = st.text_input(
+          "Nombre de la nueva categoría:", key="tab2_custom_cat_c"
+      )
+      c_es_nueva = True
+    else:
+      c_cat = c_cat_sel
+      c_es_nueva = False
+
+    col_cuo1, col_cuo2, col_cuo3 = st.columns(3)
+    with col_cuo1:
+      c_monto = st.number_input(
+          "Monto de la Cuota ($ / USD)",
+          min_value=0.0,
+          value=100.0,
+          step=10.0,
+          key="tab2_c_monto",
+      )
+    with col_cuo2:
+      c_totales = st.number_input(
+          "Cantidad TOTAL de Cuotas",
+          min_value=1,
+          value=12,
+          step=1,
+          key="tab2_c_totales",
+      )
+    with col_cuo3:
+      c_pagadas = st.number_input(
+          "Cuotas Ya Pagadas Hasta Hoy",
+          min_value=0,
+          value=0,
+          step=1,
+          key="tab2_c_pagadas",
+      )
+
+    col_cuo4, col_cuo5 = st.columns(2)
+    with col_cuo4:
+      c_dia = st.number_input(
+          "Día del mes de vencimiento (1 a 31)",
+          min_value=1,
+          max_value=31,
+          value=10,
+          key="tab2_c_dia",
+      )
+    with col_cuo5:
+      c_fecha_ini = st.date_input(
+          "Fecha de primera cuota / Inicio",
+          value=date.today(),
+          key="tab2_c_fecha_ini",
+      )
+
+    c_desc = st.text_input(
+        "Descripción (Ej: Cuota Chevrolet Corsa, Cuota TV)",
+        key="tab2_c_desc",
+    )
+
+    # Vista previa de cálculos
+    cuotas_restantes = max(0, c_totales - c_pagadas)
+    saldo_restante = cuotas_restantes * c_monto
+    fecha_fin_est = sumar_meses(date.today(), cuotas_restantes)
+
+    st.info(
+        f"📊 **Resumen del Plan:** Te quedan **{cuotas_restantes} cuotas** por"
+        f" pagar. Total pendiente: **${saldo_restante:,.2f}**. Fecha estimada"
+        f" de finalización: **{fecha_fin_est.strftime('%d/%m/%Y')}**."
+    )
+
+    if st.button(
+        "🚗 Guardar Plan en Cuotas", type="primary", key="tab2_btn_guardar_cuota"
+    ):
+      if c_monto > 0 and c_cat.strip():
+        try:
+          if c_es_nueva:
+            c_cat_clean = c_cat.strip()
+            if not df_categorias.empty and "nombre" in df_categorias.columns:
+              if c_cat_clean not in df_categorias["nombre"].values:
+                supabase.table("categorias").insert({
+                    "nombre": c_cat_clean,
+                    "tipo_general": "Gasto",
+                    "clase_503020": "50-Necesidad",
+                    "limite_mensual": 0,
+                }).execute()
+            c_cat = c_cat_clean
+
+          supabase.table("recurrentes").insert({
+              "tipo": "Gasto Fijo",
+              "categoria": c_cat,
+              "monto": c_monto,
+              "dia_mes": c_dia,
+              "fecha_inicio": str(c_fecha_ini),
+              "fecha_fin": str(fecha_fin_est),
+              "descripcion": c_desc,
+              "cuotas_totales": int(c_totales),
+              "cuotas_pagadas": int(c_pagadas),
+          }).execute()
+          recargar_app(f"Plan de cuotas para '{c_desc}' guardado exitosamente.")
+        except Exception as e:
+          st.error(f"Error al guardar plan de cuotas: {e}")
+      else:
+        st.warning("Completá los campos correctamente.")
 
 # ==========================================
 # PESTAÑA 3: AUTOMATIZACIONES LABORALES
@@ -982,14 +1147,15 @@ with tab3:
           st.error("Error al guardar la planilla.")
 
 # ==========================================
-# PESTAÑA 4: METAS, VENCIMIENTOS Y DEUDAS
+# PESTAÑA 4: METAS, VENCIMIENTOS Y PLANES DE CUOTAS
 # ==========================================
 with tab4:
-  st.header("🎯 Sobres de Ahorro, Vencimientos y Cuentas Corrientes")
+  st.header("🎯 Sobres, Vencimientos y Planes en Cuotas")
   sub_t4 = st.radio(
       "Sección:",
       [
           "Vencimientos (Fijos + Eventuales)",
+          "🚗 Planes de Cuotas Activos",
           "Me deben / Debo (Cuentas Corrientes)",
           "Sobres / Metas de Ahorro",
       ],
@@ -998,7 +1164,7 @@ with tab4:
   )
 
   # ------------------------------------
-  # 1. VENCIMIENTOS DINÁMICOS Y TRANSPARENTES
+  # 1. VENCIMIENTOS DINÁMICOS
   # ------------------------------------
   if "Vencimientos" in sub_t4:
     col_v1, col_v2 = st.columns([1, 1.8])
@@ -1083,6 +1249,19 @@ with tab4:
                           f" {item['descripcion']}"
                       ),
                   }).execute()
+
+                  # Si era un gasto en cuotas, sumar 1 a las cuotas pagadas
+                  if item.get("cuotas_totales"):
+                    nuevas_pagadas = (item.get("cuotas_pagadas") or 0) + 1
+                    nuevas_restantes = max(
+                        0, item["cuotas_totales"] - nuevas_pagadas
+                    )
+                    nueva_f_fin = sumar_meses(date.today(), nuevas_restantes)
+                    supabase.table("recurrentes").update({
+                        "cuotas_pagadas": nuevas_pagadas,
+                        "fecha_fin": str(nueva_f_fin),
+                    }).eq("id", item["id_recurrente"]).execute()
+
                   recargar_app(
                       f"Pago de {item['categoria']} registrado para"
                       f" {item['mes_año']}."
@@ -1156,7 +1335,93 @@ with tab4:
         st.info("No hay vencimientos eventuales cargados.")
 
   # ------------------------------------
-  # 2. ME DEBEN / DEBO
+  # 2. PLANES DE CUOTAS ACTIVOS
+  # ------------------------------------
+  elif "Planes de Cuotas" in sub_t4:
+    st.subheader("🚗 Planes de Financiación en Cuotas Activos")
+
+    if not df_recurrentes.empty and "cuotas_totales" in df_recurrentes.columns:
+      df_cuotas = df_recurrentes[
+          df_recurrentes["cuotas_totales"].notna()
+          & (df_recurrentes["cuotas_totales"] > 0)
+      ].copy()
+
+      if not df_cuotas.empty:
+        for _, row in df_cuotas.iterrows():
+          c_tot = int(row["cuotas_totales"])
+          c_pag = int(row["cuotas_pagadas"]) if pd.notna(row["cuotas_pagadas"]) else 0
+          c_rest = max(0, c_tot - c_pag)
+          monto_c = float(row["monto"])
+          saldo_pend = c_rest * monto_c
+          progreso = min(1.0, c_pag / c_tot) if c_tot > 0 else 1.0
+
+          f_fin_str = (
+              str(row["fecha_fin"])
+              if pd.notna(row.get("fecha_fin"))
+              else "No definida"
+          )
+
+          with st.container():
+            st.markdown(
+                f"### 🚘 **{row['categoria']}** - {row.get('descripcion', 'Plan de Cuotas')}"
+            )
+            col_c1, col_c2, col_c3, col_c4 = st.columns(4)
+            col_c1.metric("Cuota Mensual", f"${monto_c:,.2f}")
+            col_c2.metric("Progreso", f"{c_pag} de {c_tot} cuotas")
+            col_c3.metric("Total Restante", f"${saldo_pend:,.2f}")
+            col_c4.metric("Fin Estimado", f_fin_str)
+
+            st.progress(progreso)
+
+            col_btn_c1, col_btn_c2 = st.columns([1, 2])
+            with col_btn_c1:
+              if st.button(
+                  f"💳 Registrar Pago Cuota {c_pag + 1}",
+                  key=f"btn_pay_cuota_{row['id']}",
+              ):
+                try:
+                  # 1. Registrar gasto en historial
+                  supabase.table("transacciones").insert({
+                      "fecha": str(date.today()),
+                      "tipo": "Gasto Fijo",
+                      "categoria": row["categoria"],
+                      "monto": monto_c,
+                      "descripcion": (
+                          f"Pago Cuota {c_pag + 1}/{c_tot} -"
+                          f" {row.get('descripcion', '')}"
+                      ),
+                  }).execute()
+
+                  # 2. Actualizar cuotas pagadas y recalcular fin
+                  nuevas_pagadas = c_pag + 1
+                  nuevas_restantes = max(0, c_tot - nuevas_pagadas)
+                  nueva_f_fin = sumar_meses(date.today(), nuevas_restantes)
+
+                  supabase.table("recurrentes").update({
+                      "cuotas_pagadas": nuevas_pagadas,
+                      "fecha_fin": str(nueva_f_fin),
+                  }).eq("id", row["id"]).execute()
+
+                  recargar_app(
+                      f"Cuota {nuevas_pagadas}/{c_tot} registrada para"
+                      f" {row['categoria']}."
+                  )
+                except Exception as e:
+                  st.error(f"Error al registrar pago: {e}")
+
+            with col_btn_c2:
+              st.caption(
+                  f"💡 Faltan {c_rest} cuotas equivalentes a ${saldo_pend:,.2f}."
+              )
+
+            st.markdown("---")
+      else:
+        st.info("No hay planes de cuotas activos configurados.")
+    else:
+      st.info("No hay planes de cuotas configurados aún.")
+
+  # ------------------------------------
+  # 3. ME DEBEN / DEBO
   # ------------------------------------
   elif "Me deben / Debo" in sub_t4:
     col_d1, col_d2 = st.columns([1, 1.8])
@@ -1260,7 +1525,7 @@ with tab4:
         st.info("No hay cuentas corrientes registradas.")
 
   # ------------------------------------
-  # 3. METAS / SOBRES
+  # 4. METAS / SOBRES
   # ------------------------------------
   elif "Sobres / Metas" in sub_t4:
     col_m1, col_m2 = st.columns([1, 1.8])
@@ -1439,17 +1704,21 @@ with tab6:
 
   if not df_recurrentes.empty:
     st.subheader("📋 Movimientos Fijos Configurados")
+    cols_mostrar = [
+        "id",
+        "tipo",
+        "categoria",
+        "monto",
+        "dia_mes",
+        "fecha_inicio",
+        "fecha_fin",
+        "descripcion",
+    ]
+    if "cuotas_totales" in df_recurrentes.columns:
+      cols_mostrar += ["cuotas_totales", "cuotas_pagadas"]
+
     st.dataframe(
-        df_recurrentes[[
-            "id",
-            "tipo",
-            "categoria",
-            "monto",
-            "dia_mes",
-            "fecha_inicio",
-            "fecha_fin",
-            "descripcion",
-        ]],
+        df_recurrentes[cols_mostrar],
         use_container_width=True,
         hide_index=True,
     )
@@ -1497,6 +1766,8 @@ with tab6:
               "dia_mes": fila_orig.get("dia_mes", 1),
               "fecha_inicio": str(fecha_cambio_rec),
               "descripcion": fila_orig.get("descripcion", ""),
+              "cuotas_totales": fila_orig.get("cuotas_totales"),
+              "cuotas_pagadas": fila_orig.get("cuotas_pagadas", 0),
           }).execute()
 
           recargar_app("Aumento aplicado exitosamente desde la fecha.")
