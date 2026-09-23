@@ -333,23 +333,23 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
 # PESTAÑA 1: DASHBOARDS Y PROYECCIÓN FUTURA
 # ==========================================
 with tab1:
-  st.header("📊 Análisis Mensual y Proyección de Caja")
-
   hoy = date.today()
-  meses_opciones = []
-  for i in range(-6, 13):
-    d = date(
-        hoy.year + (hoy.month + i - 1) // 12, (hoy.month + i - 1) % 12 + 1, 1
-    )
-    meses_opciones.append(d.strftime("%Y-%m"))
-  meses_opciones = sorted(list(set(meses_opciones)), reverse=True)
+  
+  col_tit1, col_tit2, col_tit3 = st.columns([1, 1, 2])
+  with col_tit1:
+      año_sel = st.number_input("📅 Año", min_value=2020, max_value=2100, value=hoy.year, step=1, key="tab1_anio_sel")
+  with col_tit2:
+      meses_lista = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
+      mes_sel_nombre = st.selectbox("📆 Mes", meses_lista, index=hoy.month - 1, key="tab1_mes_sel")
+      mes_sel = meses_lista.index(mes_sel_nombre) + 1
 
-  mes_seleccionado = st.selectbox(
-      "📅 Seleccionar Mes a Analizar / Proyectar",
-      meses_opciones,
-      key="tab1_mes_sel",
-  )
-  año_sel, mes_sel = map(int, mes_seleccionado.split("-"))
+  mes_seleccionado = f"{año_sel}-{mes_sel:02d}"
+  
+  with col_tit3:
+      st.markdown("<br>", unsafe_allow_html=True)
+      st.markdown(f"### 📊 Mostrando datos para: **{mes_sel_nombre} {año_sel}**")
+
+  st.markdown("---")
 
   df_mes_real = (
       df_transacciones[df_transacciones["mes_año"] == mes_seleccionado]
@@ -437,7 +437,7 @@ with tab1:
   st.markdown("---")
   col_g1, col_g2 = st.columns(2)
   with col_g1:
-    st.subheader(f"Composición de Ingresos y Gastos ({mes_seleccionado})")
+    st.subheader(f"Composición de Ingresos y Gastos")
     if not df_mes_combinado.empty:
       fig_hist = px.bar(
           df_mes_combinado,
@@ -1332,10 +1332,10 @@ with tab4:
   # ------------------------------------
   elif "Planes de Cuotas" in sub_t4:
     st.subheader("🚗 Planes de Financiación en Cuotas Activos")
-    st.caption(
-        "✏️ **Planilla Editable de Cuotas:** Podés cambiar directamente el"
-        " **Monto de la Cuota**, las **Cuotas Pagadas**, las **Cuotas"
-        " Totales** o la **Descripción** y guardar los cambios."
+    st.info(
+        "✏️ **Planilla Editable de Cuotas:** Podés cambiar directamente el **Monto de la Cuota** si te aplicaron intereses. "
+        "✅ **Tranquilidad:** Al cambiar el monto de la cuota acá, los pagos viejos que ya guardaste NO se van a modificar en tu historial, "
+        "solo se va a calcular todo el saldo restante con el precio nuevo."
     )
 
     if not df_recurrentes.empty and "cuotas_totales" in df_recurrentes.columns:
@@ -1366,7 +1366,7 @@ with tab4:
                 ),
                 "descripcion": st.column_config.TextColumn("Descripción / Plan"),
                 "monto": st.column_config.NumberColumn(
-                    "Monto Cuota ($)", min_value=0.0, format="$%f"
+                    "Monto Cuota NUEVA ($)", min_value=0.0, format="$%f"
                 ),
                 "cuotas_pagadas": st.column_config.NumberColumn(
                     "Cuotas Pagadas", min_value=0, step=1
@@ -1428,6 +1428,8 @@ with tab4:
                 recargar_app("Plan de cuotas eliminado.")
               except Exception as e:
                 st.error("Error al eliminar plan.")
+
+        st.warning("⚠️ **Recordatorio importante:** Si tocás el botón rojo de *Eliminar Plan de Cuotas* porque lo habías cargado mal, no te olvides de ir a la solapa de **📝 Historial** para borrar el pago en sí, si es que ya le habías dado al botón de 'Marcar Pagado'.")
 
         st.markdown("---")
         st.markdown("##### 📊 **Tarjetas de Avance Visual:**")
@@ -1698,6 +1700,8 @@ with tab5:
 
     st.markdown("---")
     st.subheader("🗑️ Eliminar Movimiento del Historial")
+    st.caption("Si te equivocaste al marcar un gasto como pagado, borralo desde acá para que se reste correctamente de tus totales.")
+    
     opciones_borrar = {
         int(row["id"]): (
             f"ID {int(row['id'])} | {row['fecha']} | {row['categoria']} |"
@@ -1867,6 +1871,9 @@ with tab6:
               recargar_app(f"Registro ID {id_del_rec_t6} eliminado.")
             except Exception as e:
               st.error("Error al eliminar.")
+              
+      st.warning("⚠️ Si tocaste *Eliminar Fijo/Cuota* porque era un error, andá a la pestaña **📝 Historial & Excel** para borrar también el ticket del pago generado.")
+
     else:
       st.info("No hay movimientos fijos ni cuotas configurados aún.")
 
