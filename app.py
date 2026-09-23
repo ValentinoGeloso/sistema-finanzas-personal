@@ -171,11 +171,6 @@ def obtener_recurrentes_para_mes(año, mes):
           if pd.notna(row.get("cuotas_totales"))
           else None
       )
-      c_pag = (
-          int(row["cuotas_pagadas"])
-          if pd.notna(row.get("cuotas_pagadas"))
-          else 0
-      )
 
       desc_base = str(row.get("descripcion", ""))
       if c_tot and c_tot > 0:
@@ -321,8 +316,8 @@ lista_todas_categorias = (
 # --- ESTRUCTURA DE PESTAÑAS ---
 st.title("📈 Mi Ecosistema Financiero Pro")
 st.caption(
-    "💡 *Tus **Ingresos, Gastos Fijos y Planes en Cuotas** se proyectan"
-    " automáticamente en todos los meses futuros.*"
+    "💡 *Tus **Ingresos, Gastos Fijos y Planes en Cuotas** son totalmente"
+    " editables y se proyectan automáticamente.*"
 )
 
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
@@ -499,7 +494,7 @@ with tab1:
   )
 
 # ==========================================
-# PESTAÑA 2: CARGA RÁPIDA (CON SOPORTE PARA CUOTAS)
+# PESTAÑA 2: CARGA RÁPIDA
 # ==========================================
 with tab2:
   st.header("📝 Carga Rápida de Operaciones")
@@ -645,7 +640,7 @@ with tab2:
           st.warning("El monto debe ser mayor a 0.")
 
   # -----------------------------------------------
-  # OPCIÓN B: CONFIGURAR REGULA FIJA RECURRENTE
+  # OPCIÓN B: CONFIGURAR REGLA FIJA RECURRENTE
   # -----------------------------------------------
   elif "Ingreso Fijo" in sub_tab2:
     st.subheader("📅 Configurar Regla Fija Recurrente (Para Todos los Meses)")
@@ -832,7 +827,6 @@ with tab2:
         key="tab2_c_desc",
     )
 
-    # Vista previa de cálculos
     cuotas_restantes = max(0, c_totales - c_pagadas)
     saldo_restante = cuotas_restantes * c_monto
     fecha_fin_est = sumar_meses(date.today(), cuotas_restantes)
@@ -1147,7 +1141,7 @@ with tab3:
           st.error("Error al guardar la planilla.")
 
 # ==========================================
-# PESTAÑA 4: METAS, VENCIMIENTOS Y PLANES DE CUOTAS
+# PESTAÑA 4: METAS, VENCIMIENTOS Y PLANES EN CUOTAS
 # ==========================================
 with tab4:
   st.header("🎯 Sobres, Vencimientos y Planes en Cuotas")
@@ -1250,7 +1244,6 @@ with tab4:
                       ),
                   }).execute()
 
-                  # Si era un gasto en cuotas, sumar 1 a las cuotas pagadas
                   if item.get("cuotas_totales"):
                     nuevas_pagadas = (item.get("cuotas_pagadas") or 0) + 1
                     nuevas_restantes = max(
@@ -1335,10 +1328,15 @@ with tab4:
         st.info("No hay vencimientos eventuales cargados.")
 
   # ------------------------------------
-  # 2. PLANES DE CUOTAS ACTIVOS
+  # 2. PLANES DE CUOTAS ACTIVOS (EDITABLE EN DIRECTO)
   # ------------------------------------
   elif "Planes de Cuotas" in sub_t4:
     st.subheader("🚗 Planes de Financiación en Cuotas Activos")
+    st.caption(
+        "✏️ **Planilla Editable de Cuotas:** Podés cambiar directamente el"
+        " **Monto de la Cuota**, las **Cuotas Pagadas**, las **Cuotas"
+        " Totales** o la **Descripción** y guardar los cambios."
+    )
 
     if not df_recurrentes.empty and "cuotas_totales" in df_recurrentes.columns:
       df_cuotas = df_recurrentes[
@@ -1347,6 +1345,92 @@ with tab4:
       ].copy()
 
       if not df_cuotas.empty:
+        df_cuotas_edit = df_cuotas[[
+            "id",
+            "categoria",
+            "descripcion",
+            "monto",
+            "cuotas_pagadas",
+            "cuotas_totales",
+            "dia_mes",
+            "fecha_fin",
+        ]].copy()
+        df_cuotas_edit["fecha_fin"] = df_cuotas_edit["fecha_fin"].astype(str)
+
+        cuotas_editadas = st.data_editor(
+            df_cuotas_edit,
+            column_config={
+                "id": st.column_config.NumberColumn("ID", disabled=True),
+                "categoria": st.column_config.SelectboxColumn(
+                    "Categoría", options=lista_todas_categorias
+                ),
+                "descripcion": st.column_config.TextColumn("Descripción / Plan"),
+                "monto": st.column_config.NumberColumn(
+                    "Monto Cuota ($)", min_value=0.0, format="$%f"
+                ),
+                "cuotas_pagadas": st.column_config.NumberColumn(
+                    "Cuotas Pagadas", min_value=0, step=1
+                ),
+                "cuotas_totales": st.column_config.NumberColumn(
+                    "Cuotas Totales", min_value=1, step=1
+                ),
+                "dia_mes": st.column_config.NumberColumn(
+                    "Día Vencimiento", min_value=1, max_value=31
+                ),
+                "fecha_fin": st.column_config.TextColumn("Fin Est. (AAAA-MM-DD)"),
+            },
+            hide_index=True,
+            use_container_width=True,
+            key="tab4_editor_cuotas_directo",
+        )
+
+        col_bcuo1, col_bcuo2 = st.columns(2)
+        with col_bcuo1:
+          if st.button(
+              "💾 GUARDAR CAMBIOS EN CUOTAS",
+              type="primary",
+              key="tab4_btn_save_cuotas",
+          ):
+            try:
+              for _, row in cuotas_editadas.iterrows():
+                c_tot = int(row["cuotas_totales"])
+                c_pag = int(row["cuotas_pagadas"])
+                c_rest = max(0, c_tot - c_pag)
+                nueva_f_fin = str(sumar_meses(date.today(), c_rest))
+
+                supabase.table("recurrentes").update({
+                    "categoria": str(row["categoria"]),
+                    "descripcion": str(row["descripcion"]),
+                    "monto": float(row["monto"]),
+                    "cuotas_pagadas": c_pag,
+                    "cuotas_totales": c_tot,
+                    "dia_mes": int(row["dia_mes"]),
+                    "fecha_fin": nueva_f_fin,
+                }).eq("id", row["id"]).execute()
+
+              recargar_app(
+                  "Planes de cuotas actualizados correctamente con los nuevos"
+                  " valores."
+              )
+            except Exception as e:
+              st.error(f"Error al actualizar cuotas: {e}")
+
+        with col_bcuo2:
+          id_del_plan = st.number_input(
+              "ID Plan a Eliminar", min_value=0, step=1, key="tab4_id_del_plan"
+          )
+          if st.button("🗑️ Eliminar Plan de Cuotas", key="tab4_btn_del_plan"):
+            if id_del_plan in df_cuotas["id"].values:
+              try:
+                supabase.table("recurrentes").delete().eq(
+                    "id", id_del_plan
+                ).execute()
+                recargar_app("Plan de cuotas eliminado.")
+              except Exception as e:
+                st.error("Error al eliminar plan.")
+
+        st.markdown("---")
+        st.markdown("##### 📊 **Tarjetas de Avance Visual:**")
         for _, row in df_cuotas.iterrows():
           c_tot = int(row["cuotas_totales"])
           c_pag = int(row["cuotas_pagadas"]) if pd.notna(row["cuotas_pagadas"]) else 0
@@ -1361,60 +1445,12 @@ with tab4:
               else "No definida"
           )
 
-          with st.container():
-            st.markdown(
-                f"### 🚘 **{row['categoria']}** - {row.get('descripcion', 'Plan de Cuotas')}"
-            )
-            col_c1, col_c2, col_c3, col_c4 = st.columns(4)
-            col_c1.metric("Cuota Mensual", f"${monto_c:,.2f}")
-            col_c2.metric("Progreso", f"{c_pag} de {c_tot} cuotas")
-            col_c3.metric("Total Restante", f"${saldo_pend:,.2f}")
-            col_c4.metric("Fin Estimado", f_fin_str)
-
-            st.progress(progreso)
-
-            col_btn_c1, col_btn_c2 = st.columns([1, 2])
-            with col_btn_c1:
-              if st.button(
-                  f"💳 Registrar Pago Cuota {c_pag + 1}",
-                  key=f"btn_pay_cuota_{row['id']}",
-              ):
-                try:
-                  # 1. Registrar gasto en historial
-                  supabase.table("transacciones").insert({
-                      "fecha": str(date.today()),
-                      "tipo": "Gasto Fijo",
-                      "categoria": row["categoria"],
-                      "monto": monto_c,
-                      "descripcion": (
-                          f"Pago Cuota {c_pag + 1}/{c_tot} -"
-                          f" {row.get('descripcion', '')}"
-                      ),
-                  }).execute()
-
-                  # 2. Actualizar cuotas pagadas y recalcular fin
-                  nuevas_pagadas = c_pag + 1
-                  nuevas_restantes = max(0, c_tot - nuevas_pagadas)
-                  nueva_f_fin = sumar_meses(date.today(), nuevas_restantes)
-
-                  supabase.table("recurrentes").update({
-                      "cuotas_pagadas": nuevas_pagadas,
-                      "fecha_fin": str(nueva_f_fin),
-                  }).eq("id", row["id"]).execute()
-
-                  recargar_app(
-                      f"Cuota {nuevas_pagadas}/{c_tot} registrada para"
-                      f" {row['categoria']}."
-                  )
-                except Exception as e:
-                  st.error(f"Error al registrar pago: {e}")
-
-            with col_btn_c2:
-              st.caption(
-                  f"💡 Faltan {c_rest} cuotas equivalentes a ${saldo_pend:,.2f}."
-              )
-
-            st.markdown("---")
+          st.markdown(
+              f"**{row['categoria']}** - {row.get('descripcion', 'Plan')}:"
+              f" Cuota **${monto_c:,.2f}** ({c_pag}/{c_tot} cuotas pagadas) -"
+              f" Pendiente **${saldo_pend:,.2f}** (Finaliza: {f_fin_str})"
+          )
+          st.progress(progreso)
       else:
         st.info("No hay planes de cuotas activos configurados.")
     else:
@@ -1697,98 +1733,210 @@ with tab5:
     st.info("No hay historial disponible.")
 
 # ==========================================
-# PESTAÑA 6: GESTIÓN DE FIJOS Y CONFIGURACIÓN
+# PESTAÑA 6: GESTIÓN DE FIJOS Y CONFIGURACIÓN (EDITABLE EN DIRECTO)
 # ==========================================
 with tab6:
-  st.header("⚙️ Gestión de Movimientos Fijos Recurrentes")
+  st.header("⚙️ Gestión de Fijos, Cuotas y Categorías")
 
-  if not df_recurrentes.empty:
-    st.subheader("📋 Movimientos Fijos Configurados")
-    cols_mostrar = [
-        "id",
-        "tipo",
-        "categoria",
-        "monto",
-        "dia_mes",
-        "fecha_inicio",
-        "fecha_fin",
-        "descripcion",
-    ]
-    if "cuotas_totales" in df_recurrentes.columns:
-      cols_mostrar += ["cuotas_totales", "cuotas_pagadas"]
+  col_t6_a, col_t6_b = st.columns([1.5, 1])
 
-    st.dataframe(
-        df_recurrentes[cols_mostrar],
-        use_container_width=True,
-        hide_index=True,
+  with col_t6_a:
+    st.subheader("✏️ Planilla Editable de Fijos y Planes de Cuotas")
+    st.caption(
+        "Podés modificar montos, días de vencimiento, descripciones o cuotas y"
+        " hacer clic en guardar."
     )
 
-    st.markdown("---")
-    st.subheader("✏️ Cambiar Valor de un Fijo (Sin alterar meses pasados)")
-    col_mod_r1, col_mod_r2, col_mod_r3 = st.columns(3)
-    with col_mod_r1:
-      id_mod_rec = st.number_input(
-          "ID del Fijo a modificar",
-          min_value=0,
-          step=1,
-          key="tab6_id_mod_rec",
+    if not df_recurrentes.empty:
+      df_rec_full = df_recurrentes.copy()
+      for c in [
+          "cuotas_totales",
+          "cuotas_pagadas",
+          "fecha_fin",
+          "fecha_inicio",
+          "dia_mes",
+      ]:
+        if c not in df_rec_full.columns:
+          df_rec_full[c] = None
+
+      df_rec_full["fecha_inicio"] = (
+          df_rec_full["fecha_inicio"].astype(str).fillna("")
       )
-    with col_mod_r2:
-      nuevo_monto_rec = st.number_input(
-          "Nuevo Monto ($)",
-          min_value=0.0,
-          step=1000.0,
-          key="tab6_nuevo_monto_rec",
+      df_rec_full["fecha_fin"] = df_rec_full["fecha_fin"].astype(str).fillna("")
+
+      rec_editados = st.data_editor(
+          df_rec_full[[
+              "id",
+              "tipo",
+              "categoria",
+              "monto",
+              "dia_mes",
+              "cuotas_pagadas",
+              "cuotas_totales",
+              "descripcion",
+              "fecha_inicio",
+              "fecha_fin",
+          ]],
+          column_config={
+              "id": st.column_config.NumberColumn("ID", disabled=True),
+              "tipo": st.column_config.SelectboxColumn(
+                  "Tipo", options=["Gasto Fijo", "Ingreso Fijo"]
+              ),
+              "categoria": st.column_config.SelectboxColumn(
+                  "Categoría", options=lista_todas_categorias
+              ),
+              "monto": st.column_config.NumberColumn(
+                  "Monto ($)", min_value=0.0, format="$%f"
+              ),
+              "dia_mes": st.column_config.NumberColumn(
+                  "Día Mes", min_value=1, max_value=31
+              ),
+              "cuotas_pagadas": st.column_config.NumberColumn(
+                  "Cuotas Pagadas", min_value=0
+              ),
+              "cuotas_totales": st.column_config.NumberColumn(
+                  "Cuotas Totales", min_value=0
+              ),
+              "descripcion": st.column_config.TextColumn("Descripción"),
+              "fecha_inicio": st.column_config.TextColumn("Inicio"),
+              "fecha_fin": st.column_config.TextColumn("Fin Est."),
+          },
+          hide_index=True,
+          use_container_width=True,
+          key="tab6_editor_recurrentes",
       )
-    with col_mod_r3:
-      fecha_cambio_rec = st.date_input(
-          "Nuevo precio aplica desde",
-          value=date.today(),
-          key="tab6_fecha_cambio_rec",
+
+      col_br1, col_br2 = st.columns(2)
+      with col_br1:
+        if st.button(
+            "💾 GUARDAR CAMBIOS EN FIJOS Y CUOTAS",
+            type="primary",
+            key="tab6_btn_save_rec",
+        ):
+          try:
+            for _, row in rec_editados.iterrows():
+              c_tot_val = (
+                  int(row["cuotas_totales"])
+                  if pd.notna(row["cuotas_totales"])
+                  and int(row["cuotas_totales"]) > 0
+                  else None
+              )
+              c_pag_val = (
+                  int(row["cuotas_pagadas"])
+                  if pd.notna(row["cuotas_pagadas"])
+                  else 0
+              )
+              f_fin_val = (
+                  str(row["fecha_fin"]).strip()
+                  if pd.notna(row["fecha_fin"])
+                  and str(row["fecha_fin"]).strip() not in ["None", "nan", ""]
+                  else None
+              )
+
+              supabase.table("recurrentes").update({
+                  "tipo": str(row["tipo"]),
+                  "categoria": str(row["categoria"]),
+                  "monto": float(row["monto"]),
+                  "dia_mes": int(row["dia_mes"]),
+                  "fecha_inicio": str(row["fecha_inicio"]),
+                  "fecha_fin": f_fin_val,
+                  "descripcion": (
+                      str(row["descripcion"]) if row["descripcion"] else ""
+                  ),
+                  "cuotas_totales": c_tot_val,
+                  "cuotas_pagadas": c_pag_val,
+              }).eq("id", row["id"]).execute()
+
+            recargar_app("Movimientos fijos y cuotas actualizados.")
+          except Exception as e:
+            st.error(f"Error al guardar fijos: {e}")
+
+      with col_br2:
+        id_del_rec_t6 = st.number_input(
+            "ID Fijo/Cuota a Eliminar",
+            min_value=0,
+            step=1,
+            key="tab6_id_del_rec_t6",
+        )
+        if st.button("🗑️ Eliminar Fijo/Cuota", key="tab6_btn_del_rec_t6"):
+          if id_del_rec_t6 in df_recurrentes["id"].values:
+            try:
+              supabase.table("recurrentes").delete().eq(
+                  "id", id_del_rec_t6
+              ).execute()
+              recargar_app(f"Registro ID {id_del_rec_t6} eliminado.")
+            except Exception as e:
+              st.error("Error al eliminar.")
+    else:
+      st.info("No hay movimientos fijos ni cuotas configurados aún.")
+
+  with col_t6_b:
+    st.subheader("✏️ Planilla Editable de Categorías")
+    if not df_categorias.empty:
+      df_cat_edit = df_categorias[
+          ["id", "nombre", "tipo_general", "clase_503020", "limite_mensual"]
+      ].copy()
+
+      cat_editadas = st.data_editor(
+          df_cat_edit,
+          column_config={
+              "id": st.column_config.NumberColumn("ID", disabled=True),
+              "nombre": st.column_config.TextColumn("Nombre Categoría"),
+              "tipo_general": st.column_config.SelectboxColumn(
+                  "Tipo", options=["Gasto", "Ingreso"]
+              ),
+              "clase_503020": st.column_config.SelectboxColumn(
+                  "Clasificación 50/30",
+                  options=[
+                      "50-Necesidad",
+                      "30-Deseo",
+                      "Ingreso",
+                      "Ahorro/Inversión",
+                  ],
+              ),
+              "limite_mensual": st.column_config.NumberColumn(
+                  "Límite Mensual ($)", min_value=0.0, format="$%f"
+              ),
+          },
+          hide_index=True,
+          use_container_width=True,
+          key="tab6_editor_cat",
       )
 
-    if st.button("Aplicar Aumento / Cambio de Valor", key="tab6_btn_mod_rec"):
-      if id_mod_rec in df_recurrentes["id"].values and nuevo_monto_rec > 0:
-        try:
-          fila_orig = df_recurrentes[
-              df_recurrentes["id"] == id_mod_rec
-          ].iloc[0]
+      col_bcat1, col_bcat2 = st.columns(2)
+      with col_bcat1:
+        if st.button(
+            "💾 Guardar Categorías",
+            type="primary",
+            key="tab6_btn_update_cat",
+        ):
+          try:
+            for _, row in cat_editadas.iterrows():
+              supabase.table("categorias").update({
+                  "nombre": str(row["nombre"]),
+                  "tipo_general": str(row["tipo_general"]),
+                  "clase_503020": str(row["clase_503020"]),
+                  "limite_mensual": float(row["limite_mensual"]),
+              }).eq("id", row["id"]).execute()
+            recargar_app("Categorías actualizadas correctamente.")
+          except Exception as e:
+            st.error(f"Error al actualizar categorías: {e}")
 
-          fecha_fin_vieja = fecha_cambio_rec.replace(day=1) - timedelta(days=1)
-          supabase.table("recurrentes").update(
-              {"fecha_fin": str(fecha_fin_vieja)}
-          ).eq("id", id_mod_rec).execute()
-
-          supabase.table("recurrentes").insert({
-              "tipo": fila_orig["tipo"],
-              "categoria": fila_orig["categoria"],
-              "monto": nuevo_monto_rec,
-              "dia_mes": fila_orig.get("dia_mes", 1),
-              "fecha_inicio": str(fecha_cambio_rec),
-              "descripcion": fila_orig.get("descripcion", ""),
-              "cuotas_totales": fila_orig.get("cuotas_totales"),
-              "cuotas_pagadas": fila_orig.get("cuotas_pagadas", 0),
-          }).execute()
-
-          recargar_app("Aumento aplicado exitosamente desde la fecha.")
-        except Exception as e:
-          st.error(f"Error al actualizar precio histórico: {e}")
-
-    st.markdown("---")
-    id_del_rec = st.number_input(
-        "ID del Fijo a Dar de Baja Total",
-        min_value=0,
-        step=1,
-        key="tab6_id_del_rec",
-    )
-    if st.button("🗑️ Eliminar Fijo Recurrente", key="tab6_btn_del_rec"):
-      if id_del_rec in df_recurrentes["id"].values:
-        try:
-          supabase.table("recurrentes").delete().eq(
-              "id", id_del_rec
-          ).execute()
-          recargar_app("Movimiento fijo eliminado.")
-        except Exception as e:
-          st.error("Error al eliminar.")
-  else:
-    st.info("No hay movimientos fijos configurados aún.")
+      with col_bcat2:
+        id_del_cat = st.number_input(
+            "ID Categoría a Eliminar",
+            min_value=0,
+            step=1,
+            key="tab6_id_del_cat",
+        )
+        if st.button("🗑️ Eliminar Categoría", key="tab6_btn_del_cat"):
+          if id_del_cat in df_categorias["id"].values:
+            try:
+              supabase.table("categorias").delete().eq(
+                  "id", id_del_cat
+              ).execute()
+              recargar_app(f"Categoría {id_del_cat} eliminada.")
+            except Exception as e:
+              st.error("Error al eliminar categoría.")
+          else:
+            st.error("ID no encontrado.")
