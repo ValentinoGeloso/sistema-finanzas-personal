@@ -338,10 +338,6 @@ lista_todas_categorias = (
 
 # --- ESTRUCTURA DE PESTAÑAS ---
 st.title("📈 Mi Ecosistema Financiero Pro")
-st.caption(
-    "💡 *Tus **Ingresos, Gastos Fijos y Planes en Cuotas** son totalmente"
-    " editables y se proyectan automáticamente.*"
-)
 
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "📊 Dashboards & Proyección",
@@ -370,10 +366,11 @@ with tab1:
   
   with col_tit3:
       st.markdown("<br>", unsafe_allow_html=True)
-      st.markdown(f"### 📊 Mostrando datos para: **{mes_sel_nombre} {año_sel}**")
+      st.markdown(f"### 📊 Mostrando proyecciones para: **{mes_sel_nombre} {año_sel}**")
 
   st.markdown("---")
 
+  # --- PREPARACIÓN DE DATOS ---
   df_mes_real = (
       df_transacciones[df_transacciones["mes_año"] == mes_seleccionado]
       if not df_transacciones.empty
@@ -382,85 +379,87 @@ with tab1:
 
   df_mes_fijos = obtener_recurrentes_para_mes(año_sel, mes_sel)
 
+  df_fijos_pendientes = pd.DataFrame()
   if not df_mes_fijos.empty:
     if not df_mes_real.empty:
       cats_reales = df_mes_real["categoria"].unique()
-      df_fijos_pendientes = df_mes_fijos[
-          ~df_mes_fijos["categoria"].isin(cats_reales)
-      ]
-      df_mes_combinado = pd.concat(
-          [df_mes_real, df_fijos_pendientes], ignore_index=True
-      )
+      df_fijos_pendientes = df_mes_fijos[~df_mes_fijos["categoria"].isin(cats_reales)]
     else:
-      df_mes_combinado = df_mes_fijos.copy()
-  else:
-    df_mes_combinado = df_mes_real.copy()
+      df_fijos_pendientes = df_mes_fijos.copy()
 
-  ingresos_totales = (
-      df_mes_combinado[df_mes_combinado["tipo_general"] == "Ingreso"][
-          "monto"
-      ].sum()
-      if not df_mes_combinado.empty
-      else 0.0
-  )
-  gastos_totales = (
-      df_mes_combinado[df_mes_combinado["tipo_general"] == "Gasto"][
-          "monto"
-      ].sum()
-      if not df_mes_combinado.empty
-      else 0.0
-  )
-
+  # --- CÁLCULO DE INGRESOS ---
+  ingresos_reales = df_mes_real[df_mes_real["tipo_general"] == "Ingreso"]["monto"].sum() if not df_mes_real.empty else 0.0
+  ingresos_fijos_pend = df_fijos_pendientes[df_fijos_pendientes["tipo_general"] == "Ingreso"]["monto"].sum() if not df_fijos_pendientes.empty else 0.0
+  
+  cobrar_pend_mes = 0.0
   if not df_deudas.empty and "mes_año" in df_deudas.columns:
-    deudas_pend_mes = df_deudas[
-        (df_deudas["mes_año"] == mes_seleccionado)
-        & (df_deudas["tipo"] == "Debo")
-        & (df_deudas["estado"] == "Pendiente")
-    ]["monto"].sum()
-    cobrar_pend_mes = df_deudas[
-        (df_deudas["mes_año"] == mes_seleccionado)
-        & (df_deudas["tipo"] == "Me deben")
-        & (df_deudas["estado"] == "Pendiente")
-    ]["monto"].sum()
+    cobrar_pend_mes = df_deudas[(df_deudas["mes_año"] == mes_seleccionado) & (df_deudas["tipo"] == "Me deben") & (df_deudas["estado"] == "Pendiente")]["monto"].sum()
+
+  aaa_pend = 0.0
+  if not df_partidos_aaa.empty and "estado" in df_partidos_aaa.columns:
+      df_aaa_pend = df_partidos_aaa[df_partidos_aaa["estado"] == "Pendiente"]
+      if not df_aaa_pend.empty:
+          aaa_pend = max(0, df_aaa_pend["monto"].sum() - 15000) # Se descuenta la cuota de $15.000 automáticamente
+
+  ingresos_pendientes = ingresos_fijos_pend + cobrar_pend_mes + aaa_pend
+  proyeccion_ingresos = ingresos_reales + ingresos_pendientes
+
+  # --- CÁLCULO DE GASTOS ---
+  gastos_reales = df_mes_real[df_mes_real["tipo_general"] == "Gasto"]["monto"].sum() if not df_mes_real.empty else 0.0
+  gastos_fijos_pend = df_fijos_pendientes[df_fijos_pendientes["tipo_general"] == "Gasto"]["monto"].sum() if not df_fijos_pendientes.empty else 0.0
+  
+  deudas_pend_mes = 0.0
+  if not df_deudas.empty and "mes_año" in df_deudas.columns:
+    deudas_pend_mes = df_deudas[(df_deudas["mes_año"] == mes_seleccionado) & (df_deudas["tipo"] == "Debo") & (df_deudas["estado"] == "Pendiente")]["monto"].sum()
+
+  venc_pend = 0.0
+  if not df_vencimientos.empty and "estado" in df_vencimientos.columns:
+      mes_año_v = pd.to_datetime(df_vencimientos["fecha_vencimiento"]).dt.strftime("%Y-%m")
+      venc_pend = df_vencimientos[(mes_año_v == mes_seleccionado) & (df_vencimientos["estado"] == "Pendiente")]["monto"].sum()
+
+  gastos_pendientes = gastos_fijos_pend + deudas_pend_mes + venc_pend
+  proyeccion_gastos = gastos_reales + gastos_pendientes
+
+  # --- SALDO TOTAL ---
+  proyeccion_total = proyeccion_ingresos - proyeccion_gastos
+
+  # --- INTERFAZ DEL DASHBOARD ---
+  st.markdown("### 🟢 1. Proyección de Ingresos")
+  c_i1, c_i2, c_i3 = st.columns(3)
+  c_i1.metric("Ingresos Actuales (En mano)", f"${ingresos_reales:,.2f}")
+  c_i2.metric("Ingresos Pendientes (A cobrar)", f"${ingresos_pendientes:,.2f}", help="Suma de fijos pendientes, arbitraje AAA y cuentas que te deben.")
+  c_i3.metric("Total Proyección Ingresos", f"${proyeccion_ingresos:,.2f}")
+
+  st.markdown("### 🔴 2. Proyección de Gastos")
+  c_g1, c_g2, c_g3 = st.columns(3)
+  c_g1.metric("Gastos (Pagados)", f"${gastos_reales:,.2f}")
+  c_g2.metric("Gastos Pendientes (A pagar)", f"${gastos_pendientes:,.2f}", help="Suma de fijos pendientes, cuotas, deudas a Manuel y vencimientos eventuales.")
+  c_g3.metric("Total Proyección Gastos", f"${proyeccion_gastos:,.2f}")
+
+  st.markdown("---")
+  st.markdown("### 💎 3. Proyección Total (Saldo Final)")
+  c_r1, c_r2 = st.columns(2)
+  if proyeccion_total >= 0:
+      c_r1.success(f"**Proyección Ingresos - Proyección Gastos = ${proyeccion_total:,.2f}**")
   else:
-    deudas_pend_mes, cobrar_pend_mes = 0.0, 0.0
-
-  gastos_mas_deudas = gastos_totales + deudas_pend_mes
-  ahorro_proyectado = (ingresos_totales + cobrar_pend_mes) - gastos_mas_deudas
-
-  col1, col2, col3, col4 = st.columns(4)
-  col1.metric("Ingresos Totales (Reales + Fijos)", f"${ingresos_totales:,.2f}")
-  col2.metric("Gastos (Historial + Proyectados Pend.)", f"${gastos_totales:,.2f}", help="Suma los gastos que ya pagaste (historial) y proyecta lo que aún falta pagar este mes.")
-  col3.metric(
-      "Deudas Pendientes (Debo)",
-      f"${deudas_pend_mes:,.2f}",
-      help="Deudas con vencimiento en este mes.",
-  )
-  col4.metric(
-      "Gastos + Deudas Proyectados",
-      f"${gastos_mas_deudas:,.2f}",
-      delta=(
-          f"-${deudas_pend_mes:,.0f} pend."
-          if deudas_pend_mes > 0
-          else "Al día"
-      ),
-      delta_color="inverse",
-  )
+      c_r1.error(f"**Proyección Ingresos - Proyección Gastos = ${proyeccion_total:,.2f}**")
+      
+  if proyeccion_ingresos > 0:
+      c_r2.info(f"🎯 **Ahorro Estimado:** {((proyeccion_total/proyeccion_ingresos)*100):.1f}%")
 
   st.markdown("---")
-  col_b1, col_b2, col_b3 = st.columns(3)
-  col_b1.info(f"💵 **Ahorro / Superávit Proyectado:** ${ahorro_proyectado:,.2f}")
-  col_b2.warning(f"📩 **Por Cobrar (Me deben este mes):** ${cobrar_pend_mes:,.2f}")
-  col_b3.success(
-      "🎯 **Balance Mes:**"
-      f" {((ahorro_proyectado/ingresos_totales)*100 if ingresos_totales>0 else 0):.1f}%"
-      " de ahorro estimado"
-  )
+  
+  # --- COMPOSICIÓN GRÁFICA ---
+  if not df_mes_real.empty and not df_fijos_pendientes.empty:
+    df_mes_combinado = pd.concat([df_mes_real, df_fijos_pendientes], ignore_index=True)
+  elif not df_mes_real.empty:
+    df_mes_combinado = df_mes_real.copy()
+  else:
+    df_mes_combinado = df_fijos_pendientes.copy()
 
-  st.markdown("---")
   col_g1, col_g2 = st.columns(2)
   with col_g1:
-    st.subheader(f"Composición de Ingresos y Gastos")
+    st.subheader(f"Distribución de Categorías")
     if not df_mes_combinado.empty:
       fig_hist = px.bar(
           df_mes_combinado,
@@ -485,36 +484,6 @@ with tab1:
             df_gastos_pie, names="categoria", values="monto", hole=0.4
         )
         st.plotly_chart(fig_gastos, use_container_width=True)
-
-  st.markdown("---")
-  st.header("🧮 Simulador de Rendimiento Diario (Interés Compuesto)")
-  col_s1, col_s2, col_s3 = st.columns(3)
-  with col_s1:
-    cap_inicial = st.number_input(
-        "Capital a Invertir ($)",
-        value=float(ahorro_proyectado if ahorro_proyectado > 0 else 100000),
-        step=10000.0,
-        key="tab1_cap_inicial",
-    )
-  with col_s2:
-    tna = st.number_input(
-        "TNA Actual Billetera (%)",
-        value=38.0,
-        step=1.0,
-        key="tab1_tna",
-    )
-  with col_s3:
-    dias_inversion = st.number_input(
-        "Días de inversión", value=30, min_value=1, key="tab1_dias_inv"
-    )
-
-  tasa_diaria = (tna / 100) / 365
-  cap_final = cap_inicial * ((1 + tasa_diaria) ** dias_inversion)
-  ganancia = cap_final - cap_inicial
-  st.success(
-      f"💸 **Dinero total al final:** ${cap_final:,.2f} (Ganaste"
-      f" **${ganancia:,.2f}** sin hacer nada)"
-  )
 
 # ==========================================
 # PESTAÑA 2: CARGA RÁPIDA
@@ -1369,7 +1338,7 @@ with tab4:
         st.info("No hay vencimientos eventuales cargados.")
 
   # ------------------------------------
-  # 2. PLANES DE CUOTAS ACTIVOS
+  # 2. PLANES DE CUOTAS ACTIVOS (EDITABLE EN DIRECTO)
   # ------------------------------------
   elif "Planes de Cuotas" in sub_t4:
     st.subheader("🚗 Planes de Financiación en Cuotas Activos")
