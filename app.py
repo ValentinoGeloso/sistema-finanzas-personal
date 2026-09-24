@@ -375,12 +375,26 @@ with tab1:
 
   st.markdown("---")
 
-  # --- PREPARACIÓN DE DATOS ---
-  df_mes_real = (
+  # --- PREPARACIÓN DE DATOS Y SEPARACIÓN CRONOLÓGICA (REAL VS FUTURO) ---
+  df_mes_trans = (
       df_transacciones[df_transacciones["mes_año"] == mes_seleccionado]
       if not df_transacciones.empty
       else pd.DataFrame()
   )
+
+  if not df_mes_trans.empty:
+      if año_sel < hoy.year or (año_sel == hoy.year and mes_sel < hoy.month):
+          df_mes_real = df_mes_trans.copy()
+          df_trans_futuras = pd.DataFrame(columns=df_mes_trans.columns)
+      elif año_sel == hoy.year and mes_sel == hoy.month:
+          df_mes_real = df_mes_trans[df_mes_trans["fecha"] <= hoy].copy()
+          df_trans_futuras = df_mes_trans[df_mes_trans["fecha"] > hoy].copy()
+      else:
+          df_mes_real = pd.DataFrame(columns=df_mes_trans.columns)
+          df_trans_futuras = df_mes_trans.copy()
+  else:
+      df_mes_real = pd.DataFrame()
+      df_trans_futuras = pd.DataFrame()
 
   df_mes_fijos = obtener_recurrentes_para_mes(año_sel, mes_sel)
 
@@ -422,7 +436,10 @@ with tab1:
               bruto_aaa_mes = df_aaa_este_mes["monto"].sum()
               aaa_pend = max(0, bruto_aaa_mes - 15000)
 
-  ingresos_pendientes = ingresos_fijos_pend + cobrar_pend_mes + aaa_pend
+  # Ingresos futuros ya registrados en transacciones (ej: turnos futuros de consultorio)
+  ingresos_futuros_registrados = df_trans_futuras[df_trans_futuras["tipo_general"] == "Ingreso"]["monto"].sum() if not df_trans_futuras.empty else 0.0
+
+  ingresos_pendientes = ingresos_fijos_pend + cobrar_pend_mes + aaa_pend + ingresos_futuros_registrados
   proyeccion_ingresos = ingresos_reales + ingresos_pendientes
 
   # --- CÁLCULO DE GASTOS ---
@@ -438,7 +455,9 @@ with tab1:
       mes_año_v = pd.to_datetime(df_vencimientos["fecha_vencimiento"]).dt.strftime("%Y-%m")
       venc_pend = df_vencimientos[(mes_año_v == mes_seleccionado) & (df_vencimientos["estado"] == "Pendiente")]["monto"].sum()
 
-  gastos_pendientes = gastos_fijos_pend + deudas_pend_mes + venc_pend
+  gastos_futuros_registrados = df_trans_futuras[df_trans_futuras["tipo_general"] == "Gasto"]["monto"].sum() if not df_trans_futuras.empty else 0.0
+
+  gastos_pendientes = gastos_fijos_pend + deudas_pend_mes + venc_pend + gastos_futuros_registrados
   proyeccion_gastos = gastos_reales + gastos_pendientes
 
   # --- SALDO TOTAL ---
@@ -448,7 +467,7 @@ with tab1:
   st.markdown("### 🟢 1. Proyección de Ingresos")
   c_i1, c_i2, c_i3 = st.columns(3)
   c_i1.metric("Ingresos Actuales (En mano)", f"${ingresos_reales:,.2f}")
-  c_i2.metric("Ingresos Pendientes (A cobrar)", f"${ingresos_pendientes:,.2f}", help="Suma de fijos pendientes, arbitraje AAA que se cobra este mes y cuentas que te deben.")
+  c_i2.metric("Ingresos Pendientes (A cobrar)", f"${ingresos_pendientes:,.2f}", help="Suma de fijos pendientes, arbitraje AAA, cuentas que te deben y turnos futuros de consultorio pendientes.")
   c_i3.metric("Total Proyección Ingresos", f"${proyeccion_ingresos:,.2f}")
 
   # --- EXPANDER PARA AUDITAR DE DÓNDE SALEN LOS INGRESOS PENDIENTES ---
@@ -469,8 +488,13 @@ with tab1:
           st.markdown(f"##### ⚽ Partidos AAA a cobrar este mes (Bruto: ${df_aaa_este_mes['monto'].sum():,.2f} - Cuota AAA: $15,000 = Neto: ${aaa_pend:,.2f}):")
           cols_mostrar = [c for c in ["fecha", "detalle", "monto"] if c in df_aaa_este_mes.columns]
           st.dataframe(df_aaa_este_mes[cols_mostrar], hide_index=True, use_container_width=True)
+
+      df_ing_fut_reg = df_trans_futuras[df_trans_futuras["tipo_general"] == "Ingreso"] if not df_trans_futuras.empty else pd.DataFrame()
+      if not df_ing_fut_reg.empty:
+          st.markdown("##### 🩺 Turnos / Ingresos Futuros ya agendados (Esperando que pase la fecha):")
+          st.dataframe(df_ing_fut_reg[["fecha", "categoria", "descripcion", "monto"]], hide_index=True, use_container_width=True)
           
-      if df_fijos_ing_pend.empty and df_cobrar_mes.empty and df_aaa_este_mes.empty:
+      if df_fijos_ing_pend.empty and df_cobrar_mes.empty and df_aaa_este_mes.empty and df_ing_fut_reg.empty:
           st.info("No hay ingresos pendientes registrados para este mes.")
 
   st.markdown("### 🔴 2. Proyección de Gastos")
@@ -501,7 +525,12 @@ with tab1:
           st.markdown("##### 🔔 Vencimientos Eventuales Pendientes:")
           st.dataframe(df_venc_mes[["concepto", "fecha_vencimiento", "monto"]], hide_index=True, use_container_width=True)
 
-      if df_fijos_gast_pend.empty and df_debo_mes.empty and df_venc_mes.empty:
+      df_gast_fut_reg = df_trans_futuras[df_trans_futuras["tipo_general"] == "Gasto"] if not df_trans_futuras.empty else pd.DataFrame()
+      if not df_gast_fut_reg.empty:
+          st.markdown("##### 🚗 Gastos Futuros ya agendados:")
+          st.dataframe(df_gast_fut_reg[["fecha", "categoria", "descripcion", "monto"]], hide_index=True, use_container_width=True)
+
+      if df_fijos_gast_pend.empty and df_debo_mes.empty and df_venc_mes.empty and df_gast_fut_reg.empty:
           st.info("No hay gastos pendientes registrados para este mes.")
 
   st.markdown("---")
@@ -517,11 +546,11 @@ with tab1:
 
   st.markdown("---")
   
-  # --- COMPOSICIÓN GRÁFICA ---
-  if not df_mes_real.empty and not df_fijos_pendientes.empty:
-    df_mes_combinado = pd.concat([df_mes_real, df_fijos_pendientes], ignore_index=True)
-  elif not df_mes_real.empty:
-    df_mes_combinado = df_mes_real.copy()
+  # --- COMPOSICIÓN GRÁFICA (USANDO DATOS REALES + FUTUROS PROYECTADOS) ---
+  if not df_mes_trans.empty and not df_fijos_pendientes.empty:
+    df_mes_combinado = pd.concat([df_mes_trans, df_fijos_pendientes], ignore_index=True)
+  elif not df_mes_trans.empty:
+    df_mes_combinado = df_mes_trans.copy()
   else:
     df_mes_combinado = df_fijos_pendientes.copy()
 
@@ -1157,7 +1186,7 @@ with tab3:
           key="tab3_c_monto",
       )
 
-    st.info("💡 **Lógica automática:** La fecha de cobro se asigna automáticamente para el **día siguiente** a cada jornada laboral (ej: si trabajás el 4/9, figurará como cobrado a partir del 5/9). Podés revisarlo y editarlo abajo antes de guardar.")
+    st.info("💡 **Lógica automática:** La fecha de cobro se asigna automáticamente para el **día siguiente** a cada jornada laboral (ej: si trabajás el 4/9, figurará como cobrado a partir del 5/9). Los días futuros se mantendrán automáticamente como pendientes hasta que llegue su fecha.")
 
     if st.button("🔍 Generar Planilla de Turnos", key="tab3_btn_gen_cons"):
       cal = calendar.monthcalendar(c_anio, c_mes)
@@ -1286,7 +1315,7 @@ with tab4:
               elif dias <= 7:
                 st.warning(
                     f"⚠️ **{item['categoria']}** ({item['descripcion']}):"
-                    f" **PENDIENTE** - Vence en {dias} días ({fecha_fmt}) -"
+                    f" **PENDIENTE** - Vence en {dias} days ({fecha_fmt}) -"
                     f" ${item['monto']:,.0f}"
                 )
               else:
