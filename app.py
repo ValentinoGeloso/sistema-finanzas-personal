@@ -1149,6 +1149,7 @@ with tab3:
           value=datetime.today().year,
           key="tab3_c_anio",
       )
+    with col_c2:
       c_monto = st.number_input(
           "Pago por día normal ($)",
           value=50000.0,
@@ -1156,33 +1157,7 @@ with tab3:
           key="tab3_c_monto",
       )
 
-    with col_c2:
-      st.write("**¿Cuándo cobrás esta plata?**")
-      tipo_cobro_cons = st.radio(
-          "Modalidad de Cobro:",
-          [
-              "Cobro al mes siguiente",
-              "Cobro el mismo día trabajado",
-              "Fecha personalizada",
-          ],
-          index=0,
-          key="tab3_tipo_cobro_cons",
-      )
-
-      if "mes siguiente" in tipo_cobro_cons:
-        f_default_cobro = (
-            date(c_anio + 1, 1, 1)
-            if c_mes == 12
-            else date(c_anio, c_mes + 1, 1)
-        )
-      elif "personalizada" in tipo_cobro_cons:
-        f_default_cobro = st.date_input(
-            "Fecha de cobro fija",
-            value=datetime.today(),
-            key="tab3_f_cobro_cons_pers",
-        )
-      else:
-        f_default_cobro = None
+    st.info("💡 **Lógica automática:** La fecha de cobro se asigna automáticamente para el **día siguiente** a cada jornada laboral (ej: si trabajás el 4/9, figurará como cobrado a partir del 5/9). Podés revisarlo y editarlo abajo antes de guardar.")
 
     if st.button("🔍 Generar Planilla de Turnos", key="tab3_btn_gen_cons"):
       cal = calendar.monthcalendar(c_anio, c_mes)
@@ -1190,11 +1165,11 @@ with tab3:
       for semana in cal:
         for i, dia in enumerate(semana):
           if dia != 0 and i in [1, 4]:
-            f_trabajo = f"{c_anio}-{c_mes:02d}-{dia:02d}"
-            f_cobro = str(f_default_cobro) if f_default_cobro else f_trabajo
+            f_trabajo_date = date(c_anio, c_mes, dia)
+            f_cobro_date = f_trabajo_date + timedelta(days=1)
             turnos.append({
-                "Fecha Trabajo": f_trabajo,
-                "Fecha Cobro": f_cobro,
+                "Fecha Trabajo": str(f_trabajo_date),
+                "Fecha Cobro": str(f_cobro_date),
                 "Categoría": "Consultorio",
                 "Monto": float(c_monto),
                 "Descripción": "Día laboral",
