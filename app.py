@@ -24,6 +24,11 @@ except Exception as e:
   st.stop()
 
 
+# --- ESTADOS DE SESIÓN PARA CONFIGURACIONES LOCALES ---
+if "aaa_mes_cobro_custom" not in st.session_state:
+    st.session_state.aaa_mes_cobro_custom = {}
+
+
 # --- FUNCIONES DE UTILIDAD ---
 def primer_viernes_mes_siguiente(fecha_base=None):
   if fecha_base is None:
@@ -80,9 +85,6 @@ def cargar_tabla(nombre_tabla, order_by="id", desc=False):
 df_transacciones = cargar_tabla("transacciones", order_by="fecha", desc=True)
 df_categorias = cargar_tabla("categorias")
 df_partidos_aaa = cargar_tabla("partidos_aaa", order_by="fecha", desc=True)
-if not df_partidos_aaa.empty and "fecha_cobro" not in df_partidos_aaa.columns:
-    df_partidos_aaa["fecha_cobro"] = None
-
 df_metas = cargar_tabla("metas_ahorro")
 df_vencimientos = cargar_tabla("vencimientos", order_by="fecha_vencimiento")
 df_deudas = cargar_tabla("deudas", order_by="id", desc=True)
@@ -398,25 +400,17 @@ with tab1:
   if not df_deudas.empty and "mes_año" in df_deudas.columns:
     cobrar_pend_mes = df_deudas[(df_deudas["mes_año"] == mes_seleccionado) & (df_deudas["tipo"] == "Me deben") & (df_deudas["estado"] == "Pendiente")]["monto"].sum()
 
-  # CÁLCULO DE AAA PENDIENTE USANDO LA FECHA DE COBRO DEFINIDA
+  # CÁLCULO DE AAA PENDIENTE USANDO LA CONFIGURACIÓN MANUAL O ESTÁNDAR
   aaa_pend = 0.0
   df_aaa_este_mes = pd.DataFrame()
   if not df_partidos_aaa.empty and "estado" in df_partidos_aaa.columns:
       df_aaa_pend = df_partidos_aaa[df_partidos_aaa["estado"] == "Pendiente"].copy()
       if not df_aaa_pend.empty:
-          if "fecha_cobro" not in df_aaa_pend.columns or df_aaa_pend["fecha_cobro"].isna().all():
-              df_aaa_pend["fecha_cobro"] = df_aaa_pend["fecha"].apply(
-                  lambda x: str(primer_viernes_mes_siguiente(pd.to_datetime(x).date()))
-              )
-
           def calcular_mes_cobro_aaa(row):
-              f_cob_val = row.get("fecha_cobro")
-              if pd.notna(f_cob_val) and str(f_cob_val).strip() not in ["None", "nan", ""]:
-                  try:
-                      f_cob = pd.to_datetime(f_cob_val).date()
-                      return f"{f_cob.year}-{f_cob.month:02d}"
-                  except Exception:
-                      pass
+              p_id = row["id"]
+              if p_id in st.session_state.aaa_mes_cobro_custom:
+                  return st.session_state.aaa_mes_cobro_custom[p_id]
+              
               f_partido = pd.to_datetime(row["fecha"]).date()
               f_cobro = primer_viernes_mes_siguiente(f_partido)
               return f"{f_cobro.year}-{f_cobro.month:02d}"
@@ -471,12 +465,9 @@ with tab1:
           st.dataframe(df_cobrar_mes[["persona", "detalle", "monto"]], hide_index=True, use_container_width=True)
 
       if not df_aaa_este_mes.empty:
-          if "fecha_cobro" not in df_aaa_este_mes.columns:
-              df_aaa_este_mes["fecha_cobro"] = df_aaa_este_mes["fecha"].apply(
-                  lambda x: str(primer_viernes_mes_siguiente(pd.to_datetime(x).date()))
-              )
           st.markdown(f"##### ⚽ Partidos AAA a cobrar este mes (Bruto: ${df_aaa_este_mes['monto'].sum():,.2f} - Cuota AAA: $15,000 = Neto: ${aaa_pend:,.2f}):")
-          st.dataframe(df_aaa_este_mes[["fecha", "detalle", "monto", "fecha_cobro"]], hide_index=True, use_container_width=True)
+          cols_mostrar = [c for c in ["fecha", "detalle", "monto"] if c in df_aaa_este_mes.columns]
+          st.dataframe(df_aaa_este_mes[cols_mostrar], hide_index=True, use_container_width=True)
           
       if df_fijos_ing_pend.empty and df_cobrar_mes.empty and df_aaa_este_mes.empty:
           st.info("No hay ingresos pendientes registrados para este mes.")
@@ -968,14 +959,11 @@ with tab3:
       if st.button("Guardar Partido", key="tab3_btn_guardar_aaa"):
         if m_partido_aaa > 0:
           try:
-            f_cob_def = primer_viernes_mes_siguiente(f_partido_aaa)
-
             supabase.table("partidos_aaa").insert({
                 "fecha": str(f_partido_aaa),
                 "detalle": d_partido_aaa,
                 "monto": m_partido_aaa,
                 "estado": "Pendiente",
-                "fecha_cobro": str(f_cob_def)
             }).execute()
             recargar_app("Partido guardado en pendientes.")
           except Exception as e:
@@ -990,37 +978,41 @@ with tab3:
             df_partidos_aaa["estado"] == "Pendiente"
         ].copy()
         if not df_pend.empty:
-          if "fecha_cobro" not in df_pend.columns or df_pend["fecha_cobro"].isna().all():
-              df_pend["fecha_cobro"] = df_pend["fecha"].apply(
-                  lambda x: str(primer_viernes_mes_siguiente(pd.to_datetime(x).date()))
-              )
+          # Asignar mes de cobro actual (por defecto mes siguiente o el guardado en session_state)
+          def obtener_mes_cobro_def(row):
+              p_id = row["id"]
+              if p_id in st.session_state.aaa_mes_cobro_custom:
+                  return st.session_state.aaa_mes_cobro_custom[p_id]
+              f_p = pd.to_datetime(row["fecha"]).date()
+              f_cob = primer_viernes_mes_siguiente(f_p)
+              return f"{f_cob.year}-{f_cob.month:02d}"
 
-          st.write("Seleccioná partidos a cobrar y/o **editá la Fecha de Cobro Estimada** directamente en la tabla si querés que aparezca en otro mes:")
+          df_pend["Mes de Cobro (AAAA-MM)"] = df_pend.apply(obtener_mes_cobro_def, axis=1)
+
+          st.write("Seleccioná los partidos que querés incluir en el cobro y **modificá el mes de cobro** si querés pasarlo de mes (ej: de septiembre a octubre):")
           df_pend["Incluir"] = True
-          df_pend = df_pend[["Incluir", "id", "fecha", "detalle", "monto", "fecha_cobro"]]
+          df_pend_view = df_pend[["Incluir", "id", "fecha", "detalle", "monto", "Mes de Cobro (AAAA-MM)"]]
+          
           editado = st.data_editor(
-              df_pend,
+              df_pend_view,
               column_config={
                   "Incluir": st.column_config.CheckboxColumn(
                       "Cobrar ahora", default=True
                   ),
                   "id": st.column_config.NumberColumn("ID", disabled=True),
-                  "fecha_cobro": st.column_config.TextColumn("Fecha Cobro Est. (AAAA-MM-DD)"),
+                  "Mes de Cobro (AAAA-MM)": st.column_config.TextColumn("Mes Asignado (AAAA-MM)"),
               },
               hide_index=True,
               use_container_width=True,
               key="tab3_editor_aaa",
           )
           
-          if st.button("💾 Guardar cambios de Fechas de Cobro Estimadas", key="tab3_btn_guardar_fechas_aaa"):
-              try:
-                  for _, r_ed in editado.iterrows():
-                      supabase.table("partidos_aaa").update({
-                          "fecha_cobro": str(r_ed["fecha_cobro"])
-                      }).eq("id", r_ed["id"]).execute()
-                  recargar_app("Fechas de cobro estimadas actualizadas.")
-              except Exception as e:
-                  st.error(f"Error al actualizar fechas: {e}")
+          if st.button("💾 Guardar Asignación de Meses", key="tab3_btn_guardar_meses_aaa"):
+              for _, r_ed in editado.iterrows():
+                  p_id = r_ed["id"]
+                  nuevo_mes = str(r_ed["Mes de Cobro (AAAA-MM)"]).strip()
+                  st.session_state.aaa_mes_cobro_custom[p_id] = nuevo_mes
+              recargar_app("Meses de cobro actualizados correctamente.")
 
           seleccionados = editado[editado["Incluir"] == True]
           bruto_calculado = seleccionados["monto"].sum()
@@ -1031,14 +1023,9 @@ with tab3:
           col_tot2.metric("Cuota AAA", "-$15,000")
           col_tot3.metric("NETO A COBRAR", f"${neto_calculado:,.0f}")
 
-          fecha_sugerida = (
-              pd.to_datetime(seleccionados["fecha_cobro"].min()).date()
-              if not seleccionados.empty
-              else primer_viernes_mes_siguiente(date.today())
-          )
           fecha_cobro_final = st.date_input(
-              "📅 Fecha de Cobro Real",
-              value=fecha_sugerida,
+              "📅 Fecha de Cobro Real / Depósito",
+              value=date.today(),
               key="tab3_f_cobro_aaa",
           )
 
@@ -1061,15 +1048,11 @@ with tab3:
                 }).execute()
                 for _, row_sel in seleccionados.iterrows():
                   p_id = row_sel["id"]
-                  f_cobro_mod = row_sel["fecha_cobro"]
-                  try:
-                    supabase.table("partidos_aaa").update(
-                        {"estado": "Cobrado", "fecha_cobro": str(f_cobro_mod)}
-                    ).eq("id", p_id).execute()
-                  except Exception:
-                    supabase.table("partidos_aaa").update(
-                        {"estado": "Cobrado"}
-                    ).eq("id", p_id).execute()
+                  supabase.table("partidos_aaa").update(
+                      {"estado": "Cobrado"}
+                  ).eq("id", p_id).execute()
+                  if p_id in st.session_state.aaa_mes_cobro_custom:
+                      del st.session_state.aaa_mes_cobro_custom[p_id]
 
                 recargar_app("Liquidación registrada.")
               except Exception as e:
@@ -1122,7 +1105,7 @@ with tab3:
           }).execute()
           recargar_app("Ingreso Argenliga registrado.")
         except Exception as e:
-          st.error("Error al registrar.")
+          st.error(f"Error al registrar.")
 
   elif "Consultorio" in modo_trabajo:
     st.subheader("Generador de Turnos Consultorio")
