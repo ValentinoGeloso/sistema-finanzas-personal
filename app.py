@@ -395,13 +395,19 @@ with tab1:
   if not df_deudas.empty and "mes_año" in df_deudas.columns:
     cobrar_pend_mes = df_deudas[(df_deudas["mes_año"] == mes_seleccionado) & (df_deudas["tipo"] == "Me deben") & (df_deudas["estado"] == "Pendiente")]["monto"].sum()
 
-  # CÁLCULO DE AAA PENDIENTE FILTRADO POR SU FECHA DE COBRO ESTIMADA (PRIMER VIERNES DEL MES SIGUIENTE)
+  # CÁLCULO DE AAA PENDIENTE USANDO LA FECHA DE COBRO DEFINIDA (ESTÁNDAR O EDITADA A MANO)
   aaa_pend = 0.0
   df_aaa_este_mes = pd.DataFrame()
   if not df_partidos_aaa.empty and "estado" in df_partidos_aaa.columns:
       df_aaa_pend = df_partidos_aaa[df_partidos_aaa["estado"] == "Pendiente"].copy()
       if not df_aaa_pend.empty:
           def calcular_mes_cobro_aaa(row):
+              if "fecha_cobro" in row and pd.notna(row["fecha_cobro"]) and str(row["fecha_cobro"]).strip() not in ["None", "nan", ""]:
+                  try:
+                      f_cob = pd.to_datetime(row["fecha_cobro"]).date()
+                      return f"{f_cob.year}-{f_cob.month:02d}"
+                  except Exception:
+                      pass
               f_partido = pd.to_datetime(row["fecha"]).date()
               f_cobro = primer_viernes_mes_siguiente(f_partido)
               return f"{f_cobro.year}-{f_cobro.month:02d}"
@@ -426,7 +432,7 @@ with tab1:
   venc_pend = 0.0
   if not df_vencimientos.empty and "estado" in df_vencimientos.columns:
       mes_año_v = pd.to_datetime(df_vencimientos["fecha_vencimiento"]).dt.strftime("%Y-%m")
-      venc_pend = df_vencimientos[(mes_año_v == mes_seleccionado) & (mes_vencimientos["estado"] == "Pendiente")]["monto"].sum()
+      venc_pend = df_vencimientos[(mes_año_v == mes_seleccionado) & (df_vencimientos["estado"] == "Pendiente")]["monto"].sum()
 
   gastos_pendientes = gastos_fijos_pend + deudas_pend_mes + venc_pend
   proyeccion_gastos = gastos_reales + gastos_pendientes
@@ -457,7 +463,7 @@ with tab1:
 
       if not df_aaa_este_mes.empty:
           st.markdown(f"##### ⚽ Partidos AAA a cobrar este mes (Bruto: ${df_aaa_este_mes['monto'].sum():,.2f} - Cuota AAA: $15,000 = Neto: ${aaa_pend:,.2f}):")
-          st.dataframe(df_aaa_este_mes[["fecha", "detalle", "monto"]], hide_index=True, use_container_width=True)
+          st.dataframe(df_aaa_este_mes[["fecha", "detalle", "monto", "fecha_cobro"]], hide_index=True, use_container_width=True)
           
       if df_fijos_ing_pend.empty and df_cobrar_mes.empty and df_aaa_este_mes.empty:
           st.info("No hay ingresos pendientes registrados para este mes.")
@@ -949,15 +955,19 @@ with tab3:
       if st.button("Guardar Partido", key="tab3_btn_guardar_aaa"):
         if m_partido_aaa > 0:
           try:
+            # Fecha cobro por defecto (primer viernes del mes siguiente) sin bloqueos rígidos
+            f_cob_def = primer_viernes_mes_siguiente(f_partido_aaa)
+
             supabase.table("partidos_aaa").insert({
                 "fecha": str(f_partido_aaa),
                 "detalle": d_partido_aaa,
                 "monto": m_partido_aaa,
                 "estado": "Pendiente",
+                "fecha_cobro": str(f_cob_def)
             }).execute()
             recargar_app("Partido guardado en pendientes.")
           except Exception as e:
-            st.error("Error al guardar el partido.")
+            st.error(f"Error al guardar el partido: {e}")
         else:
           st.warning("El monto debe ser mayor a 0.")
 
@@ -968,9 +978,14 @@ with tab3:
             df_partidos_aaa["estado"] == "Pendiente"
         ].copy()
         if not df_pend.empty:
-          st.write("Seleccioná partidos a cobrar:")
+          if "fecha_cobro" not in df_pend.columns:
+              df_pend["fecha_cobro"] = df_pend["fecha"].apply(
+                  lambda x: str(primer_viernes_mes_siguiente(pd.to_datetime(x).date()))
+              )
+
+          st.write("Seleccioná partidos a cobrar y/o **editá la Fecha de Cobro Estimada** directamente en la tabla si querés que aparezca en otro mes:")
           df_pend["Incluir"] = True
-          df_pend = df_pend[["Incluir", "id", "fecha", "detalle", "monto"]]
+          df_pend = df_pend[["Incluir", "id", "fecha", "detalle", "monto", "fecha_cobro"]]
           editado = st.data_editor(
               df_pend,
               column_config={
@@ -978,11 +993,24 @@ with tab3:
                       "Cobrar ahora", default=True
                   ),
                   "id": st.column_config.NumberColumn("ID", disabled=True),
+                  "fecha_cobro": st.column_config.TextColumn("Fecha Cobro Est. (AAA-MM-DD)"),
               },
               hide_index=True,
               use_container_width=True,
               key="tab3_editor_aaa",
           )
+          
+          # Botón rápido para actualizar solo las fechas de cobro estimadas en la BD
+          if st.button("💾 Guardar cambios de Fechas de Cobro Estimadas", key="tab3_btn_guardar_fechas_aaa"):
+              try:
+                  for _, r_ed in editado.iterrows():
+                      supabase.table("partidos_aaa").update({
+                          "fecha_cobro": str(r_ed["fecha_cobro"])
+                      }).eq("id", r_ed["id"]).execute()
+                  recargar_app("Fechas de cobro estimadas actualizadas.")
+              except Exception as e:
+                  st.error(f"Error al actualizar fechas: {e}")
+
           seleccionados = editado[editado["Incluir"] == True]
           bruto_calculado = seleccionados["monto"].sum()
           neto_calculado = bruto_calculado - 15000
@@ -992,10 +1020,14 @@ with tab3:
           col_tot2.metric("Cuota AAA", "-$15,000")
           col_tot3.metric("NETO A COBRAR", f"${neto_calculado:,.0f}")
 
-          fecha_proyectada = primer_viernes_mes_siguiente(date.today())
+          fecha_sugerida = (
+              pd.to_datetime(seleccionados["fecha_cobro"].min()).date()
+              if not seleccionados.empty
+              else primer_viernes_mes_siguiente(date.today())
+          )
           fecha_cobro_final = st.date_input(
               "📅 Fecha de Cobro Real",
-              value=fecha_proyectada,
+              value=fecha_sugerida,
               key="tab3_f_cobro_aaa",
           )
 
@@ -1016,13 +1048,21 @@ with tab3:
                         " Cuota descontada)"
                     ),
                 }).execute()
-                for p_id in seleccionados["id"].tolist():
-                  supabase.table("partidos_aaa").update(
-                      {"estado": "Cobrado"}
-                  ).eq("id", p_id).execute()
+                for _, row_sel in seleccionados.iterrows():
+                  p_id = row_sel["id"]
+                  f_cobro_mod = row_sel["fecha_cobro"]
+                  try:
+                    supabase.table("partidos_aaa").update(
+                        {"estado": "Cobrado", "fecha_cobro": str(f_cobro_mod)}
+                    ).eq("id", p_id).execute()
+                  except Exception:
+                    supabase.table("partidos_aaa").update(
+                        {"estado": "Cobrado"}
+                    ).eq("id", p_id).execute()
+
                 recargar_app("Liquidación registrada.")
               except Exception as e:
-                st.error("Error al procesar la liquidación.")
+                st.error(f"Error al procesar la liquidación: {e}")
             else:
               st.warning("El neto debe ser mayor a 0.")
         else:
@@ -1786,7 +1826,7 @@ with tab6:
     st.subheader("✏️ Planilla Editable de Fijos y Planes de Cuotas")
     st.caption(
         "Podés modificar montos, días de vencimiento, descripciones o cuotas y"
-        " hacer clic in guardar."
+        " hacer clic en guardar."
     )
 
     if not df_recurrentes.empty:
