@@ -257,7 +257,6 @@ def calcular_vencimientos_fijos(hoy=None):
     cur_year = hoy.year
     cur_month = hoy.month
 
-    # Buscar el ciclo de facturación actual según la frecuencia
     meses_diff = (cur_year - f_ini.year) * 12 + (cur_month - f_ini.month)
     if meses_diff < 0:
         cy = f_ini.year
@@ -398,11 +397,20 @@ with tab1:
 
   df_mes_fijos = obtener_recurrentes_para_mes(año_sel, mes_sel)
 
+  # --- FILTRADO INTELIGENTE DE FIJOS PENDIENTES (POR CATEGORÍA Y TIPO GENERAL) ---
   df_fijos_pendientes = pd.DataFrame()
   if not df_mes_fijos.empty:
-    if not df_mes_real.empty:
-      cats_reales = df_mes_real["categoria"].unique()
-      df_fijos_pendientes = df_mes_fijos[~df_mes_fijos["categoria"].isin(cats_reales)]
+    if not df_mes_trans.empty:
+      pendientes = []
+      for _, f_row in df_mes_fijos.iterrows():
+        # Verificar si ya existe una transacción real o futura registrada en este mes con la misma categoría y tipo_general
+        match = df_mes_trans[
+            (df_mes_trans["categoria"] == f_row["categoria"]) &
+            (df_mes_trans["tipo_general"] == f_row["tipo_general"])
+        ]
+        if match.empty:
+          pendientes.append(f_row)
+      df_fijos_pendientes = pd.DataFrame(pendientes) if pendientes else pd.DataFrame()
     else:
       df_fijos_pendientes = df_mes_fijos.copy()
 
@@ -436,7 +444,6 @@ with tab1:
               bruto_aaa_mes = df_aaa_este_mes["monto"].sum()
               aaa_pend = max(0, bruto_aaa_mes - 15000)
 
-  # Ingresos futuros ya registrados en transacciones (ej: turnos futuros de consultorio)
   ingresos_futuros_registrados = df_trans_futuras[df_trans_futuras["tipo_general"] == "Ingreso"]["monto"].sum() if not df_trans_futuras.empty else 0.0
 
   ingresos_pendientes = ingresos_fijos_pend + cobrar_pend_mes + aaa_pend + ingresos_futuros_registrados
@@ -1315,7 +1322,7 @@ with tab4:
               elif dias <= 7:
                 st.warning(
                     f"⚠️ **{item['categoria']}** ({item['descripcion']}):"
-                    f" **PENDIENTE** - Vence en {dias} days ({fecha_fmt}) -"
+                    f" **PENDIENTE** - Vence en {dias} días ({fecha_fmt}) -"
                     f" ${item['monto']:,.0f}"
                 )
               else:
