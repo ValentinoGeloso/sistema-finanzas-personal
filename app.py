@@ -80,6 +80,9 @@ def cargar_tabla(nombre_tabla, order_by="id", desc=False):
 df_transacciones = cargar_tabla("transacciones", order_by="fecha", desc=True)
 df_categorias = cargar_tabla("categorias")
 df_partidos_aaa = cargar_tabla("partidos_aaa", order_by="fecha", desc=True)
+if not df_partidos_aaa.empty and "fecha_cobro" not in df_partidos_aaa.columns:
+    df_partidos_aaa["fecha_cobro"] = None
+
 df_metas = cargar_tabla("metas_ahorro")
 df_vencimientos = cargar_tabla("vencimientos", order_by="fecha_vencimiento")
 df_deudas = cargar_tabla("deudas", order_by="id", desc=True)
@@ -395,16 +398,22 @@ with tab1:
   if not df_deudas.empty and "mes_año" in df_deudas.columns:
     cobrar_pend_mes = df_deudas[(df_deudas["mes_año"] == mes_seleccionado) & (df_deudas["tipo"] == "Me deben") & (df_deudas["estado"] == "Pendiente")]["monto"].sum()
 
-  # CÁLCULO DE AAA PENDIENTE USANDO LA FECHA DE COBRO DEFINIDA (ESTÁNDAR O EDITADA A MANO)
+  # CÁLCULO DE AAA PENDIENTE USANDO LA FECHA DE COBRO DEFINIDA
   aaa_pend = 0.0
   df_aaa_este_mes = pd.DataFrame()
   if not df_partidos_aaa.empty and "estado" in df_partidos_aaa.columns:
       df_aaa_pend = df_partidos_aaa[df_partidos_aaa["estado"] == "Pendiente"].copy()
       if not df_aaa_pend.empty:
+          if "fecha_cobro" not in df_aaa_pend.columns or df_aaa_pend["fecha_cobro"].isna().all():
+              df_aaa_pend["fecha_cobro"] = df_aaa_pend["fecha"].apply(
+                  lambda x: str(primer_viernes_mes_siguiente(pd.to_datetime(x).date()))
+              )
+
           def calcular_mes_cobro_aaa(row):
-              if "fecha_cobro" in row and pd.notna(row["fecha_cobro"]) and str(row["fecha_cobro"]).strip() not in ["None", "nan", ""]:
+              f_cob_val = row.get("fecha_cobro")
+              if pd.notna(f_cob_val) and str(f_cob_val).strip() not in ["None", "nan", ""]:
                   try:
-                      f_cob = pd.to_datetime(row["fecha_cobro"]).date()
+                      f_cob = pd.to_datetime(f_cob_val).date()
                       return f"{f_cob.year}-{f_cob.month:02d}"
                   except Exception:
                       pass
@@ -462,6 +471,10 @@ with tab1:
           st.dataframe(df_cobrar_mes[["persona", "detalle", "monto"]], hide_index=True, use_container_width=True)
 
       if not df_aaa_este_mes.empty:
+          if "fecha_cobro" not in df_aaa_este_mes.columns:
+              df_aaa_este_mes["fecha_cobro"] = df_aaa_este_mes["fecha"].apply(
+                  lambda x: str(primer_viernes_mes_siguiente(pd.to_datetime(x).date()))
+              )
           st.markdown(f"##### ⚽ Partidos AAA a cobrar este mes (Bruto: ${df_aaa_este_mes['monto'].sum():,.2f} - Cuota AAA: $15,000 = Neto: ${aaa_pend:,.2f}):")
           st.dataframe(df_aaa_este_mes[["fecha", "detalle", "monto", "fecha_cobro"]], hide_index=True, use_container_width=True)
           
@@ -955,7 +968,6 @@ with tab3:
       if st.button("Guardar Partido", key="tab3_btn_guardar_aaa"):
         if m_partido_aaa > 0:
           try:
-            # Fecha cobro por defecto (primer viernes del mes siguiente) sin bloqueos rígidos
             f_cob_def = primer_viernes_mes_siguiente(f_partido_aaa)
 
             supabase.table("partidos_aaa").insert({
@@ -978,7 +990,7 @@ with tab3:
             df_partidos_aaa["estado"] == "Pendiente"
         ].copy()
         if not df_pend.empty:
-          if "fecha_cobro" not in df_pend.columns:
+          if "fecha_cobro" not in df_pend.columns or df_pend["fecha_cobro"].isna().all():
               df_pend["fecha_cobro"] = df_pend["fecha"].apply(
                   lambda x: str(primer_viernes_mes_siguiente(pd.to_datetime(x).date()))
               )
@@ -993,14 +1005,13 @@ with tab3:
                       "Cobrar ahora", default=True
                   ),
                   "id": st.column_config.NumberColumn("ID", disabled=True),
-                  "fecha_cobro": st.column_config.TextColumn("Fecha Cobro Est. (AAA-MM-DD)"),
+                  "fecha_cobro": st.column_config.TextColumn("Fecha Cobro Est. (AAAA-MM-DD)"),
               },
               hide_index=True,
               use_container_width=True,
               key="tab3_editor_aaa",
           )
           
-          # Botón rápido para actualizar solo las fechas de cobro estimadas en la BD
           if st.button("💾 Guardar cambios de Fechas de Cobro Estimadas", key="tab3_btn_guardar_fechas_aaa"):
               try:
                   for _, r_ed in editado.iterrows():
