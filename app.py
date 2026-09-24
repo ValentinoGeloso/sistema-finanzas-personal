@@ -24,11 +24,6 @@ except Exception as e:
   st.stop()
 
 
-# --- ESTADOS DE SESIÓN PARA CONFIGURACIONES LOCALES ---
-if "aaa_mes_cobro_custom" not in st.session_state:
-    st.session_state.aaa_mes_cobro_custom = {}
-
-
 # --- FUNCIONES DE UTILIDAD ---
 def primer_viernes_mes_siguiente(fecha_base=None):
   if fecha_base is None:
@@ -209,7 +204,7 @@ def obtener_recurrentes_para_mes(año, mes):
   return pd.DataFrame(recurrentes_validos)
 
 
-# --- CÁLCULO DE VENCIMIENTOS (CON FRECUENCIA BIMESTRAL/ETC) ---
+# --- CÁLCULO DE VENCIMIENTOS / GASTOS FIJOS ---
 def calcular_vencimientos_fijos(hoy=None):
   if hoy is None:
     hoy = date.today()
@@ -334,6 +329,103 @@ def calcular_vencimientos_fijos(hoy=None):
   return vencimientos_info
 
 
+# --- CÁLCULO DE INGRESOS FIJOS A COBRAR ---
+def calcular_ingresos_fijos_estado(hoy=None):
+  if hoy is None:
+    hoy = date.today()
+
+  if df_recurrentes.empty:
+    return []
+
+  ingresos_info = []
+  ingresos_fijos = (
+      df_recurrentes[df_recurrentes["tipo"].str.contains("Ingreso", na=False)]
+      if "tipo" in df_recurrentes.columns
+      else pd.DataFrame()
+  )
+
+  if ingresos_fijos.empty:
+    return []
+
+  for _, row in ingresos_fijos.iterrows():
+    dia_m = int(row.get("dia_mes", 1)) if pd.notna(row.get("dia_mes")) else 1
+    cat = str(row["categoria"])
+    monto = float(row["monto"])
+    desc = str(row.get("descripcion", ""))
+    id_rec = row["id"]
+    frec = int(row.get("frecuencia_meses", 1)) if pd.notna(row.get("frecuencia_meses")) else 1
+
+    f_ini = (
+        pd.to_datetime(row["fecha_inicio"]).date()
+        if pd.notna(row.get("fecha_inicio"))
+        else date(2024, 1, 1)
+    )
+    f_fin = (
+        pd.to_datetime(row["fecha_fin"]).date()
+        if pd.notna(row.get("fecha_fin"))
+        else None
+    )
+
+    cur_year = hoy.year
+    cur_month = hoy.month
+
+    meses_diff = (cur_year - f_ini.year) * 12 + (cur_month - f_ini.month)
+    if meses_diff < 0:
+        cy = f_ini.year
+        cm = f_ini.month
+    else:
+        resto = meses_diff % frec
+        if resto == 0:
+            cy = cur_year
+            cm = cur_month
+        else:
+            meses_falt = frec - resto
+            cy = cur_year + (cur_month + meses_falt - 1) // 12
+            cm = (cur_month + meses_falt - 1) % 12 + 1
+
+    max_days = calendar.monthrange(cy, cm)[1]
+    due_date_curr = date(cy, cm, min(dia_m, max_days))
+
+    if f_fin and due_date_curr > f_fin:
+      continue
+
+    mes_str_curr = f"{cy}-{cm:02d}"
+
+    cobrado_este_mes = False
+    if not df_transacciones.empty and "mes_año" in df_transacciones.columns:
+      df_cobrado = df_transacciones[
+          (df_transacciones["mes_año"] == mes_str_curr)
+          & (df_transacciones["categoria"] == cat)
+          & (df_transacciones["tipo_general"] == "Ingreso")
+      ]
+      if not df_cobrado.empty:
+        cobrado_este_mes = True
+
+    if not cobrado_este_mes:
+      ingresos_info.append({
+          "id_recurrente": id_rec,
+          "categoria": cat,
+          "monto": monto,
+          "fecha_cobro": due_date_curr,
+          "descripcion": desc if desc else "Ingreso Fijo",
+          "mes_año": mes_str_curr,
+          "estado_cobro": "Pendiente",
+      })
+    else:
+      ingresos_info.append({
+          "id_recurrente": id_rec,
+          "categoria": cat,
+          "monto": monto,
+          "fecha_cobro": due_date_curr,
+          "descripcion": desc if desc else "Ingreso Fijo",
+          "mes_año": mes_str_curr,
+          "estado_cobro": "Cobrado este mes",
+      })
+
+  ingresos_info.sort(key=lambda x: x["fecha_cobro"])
+  return ingresos_info
+
+
 lista_todas_categorias = (
     df_categorias["nombre"].tolist()
     if not df_categorias.empty and "nombre" in df_categorias.columns
@@ -403,7 +495,6 @@ with tab1:
     if not df_mes_trans.empty:
       pendientes = []
       for _, f_row in df_mes_fijos.iterrows():
-        # Verificar si ya existe una transacción real o futura registrada en este mes con la misma categoría y tipo_general
         match = df_mes_trans[
             (df_mes_trans["categoria"] == f_row["categoria"]) &
             (df_mes_trans["tipo_general"] == f_row["tipo_general"])
@@ -422,21 +513,19 @@ with tab1:
   if not df_deudas.empty and "mes_año" in df_deudas.columns:
     cobrar_pend_mes = df_deudas[(df_deudas["mes_año"] == mes_seleccionado) & (df_deudas["tipo"] == "Me deben") & (df_deudas["estado"] == "Pendiente")]["monto"].sum()
 
-  # CÁLCULO DE AAA PENDIENTE USANDO FECHA PREDETERMINADA (PRIMER VIERNES DEL MES SIGUIENTE)
+  # CÁLCULO DE AAA PENDIENTE USANDO FECHA GUARDADA EN SUPABASE O PREDETERMINADA
   aaa_pend = 0.0
   df_aaa_este_mes = pd.DataFrame()
   if not df_partidos_aaa.empty and "estado" in df_partidos_aaa.columns:
       df_aaa_pend = df_partidos_aaa[df_partidos_aaa["estado"] == "Pendiente"].copy()
       if not df_aaa_pend.empty:
-          for _, r_aaa in df_aaa_pend.iterrows():
-              p_id = r_aaa["id"]
-              if p_id not in st.session_state.aaa_mes_cobro_custom:
-                  f_partido = pd.to_datetime(r_aaa["fecha"]).date()
-                  f_cobro_def = primer_viernes_mes_siguiente(f_partido)
-                  st.session_state.aaa_mes_cobro_custom[p_id] = f"{f_cobro_def.year}-{f_cobro_def.month:02d}"
-
           def calcular_mes_cobro_aaa(row):
-              return st.session_state.aaa_mes_cobro_custom.get(row["id"])
+              db_val = row.get("mes_cobro_custom")
+              if pd.notna(db_val) and str(db_val).strip() not in ["", "None", "nan"]:
+                  return str(db_val).strip()
+              f_partido = pd.to_datetime(row["fecha"]).date()
+              f_cobro_def = primer_viernes_mes_siguiente(f_partido)
+              return f"{f_cobro_def.year}-{f_cobro_def.month:02d}"
           
           df_aaa_pend["mes_cobro_estimado"] = df_aaa_pend.apply(calcular_mes_cobro_aaa, axis=1)
           df_aaa_este_mes = df_aaa_pend[df_aaa_pend["mes_cobro_estimado"] == mes_seleccionado]
@@ -477,7 +566,7 @@ with tab1:
   c_i2.metric("Ingresos Pendientes (A cobrar)", f"${ingresos_pendientes:,.2f}", help="Suma de fijos pendientes, arbitraje AAA, cuentas que te deben y turnos futuros de consultorio pendientes.")
   c_i3.metric("Total Proyección Ingresos", f"${proyeccion_ingresos:,.2f}")
 
-  # --- EXPANDER PARA AUDITAR DE DÓNDE SALEN LOS INGRESOS PENDIENTES ---
+  # --- EXPANDER PARA AUDITAR INGRESOS PENDIENTES ---
   with st.expander("🔍 Ver de dónde salen estos Ingresos Pendientes (Detalle)"):
       df_fijos_ing_pend = df_fijos_pendientes[df_fijos_pendientes["tipo_general"] == "Ingreso"] if not df_fijos_pendientes.empty else pd.DataFrame()
       if not df_fijos_ing_pend.empty:
@@ -510,7 +599,6 @@ with tab1:
   c_g2.metric("Gastos Pendientes (A pagar)", f"${gastos_pendientes:,.2f}", help="Suma de fijos pendientes, cuotas, deudas y vencimientos eventuales.")
   c_g3.metric("Total Proyección Gastos", f"${proyeccion_gastos:,.2f}")
 
-  # --- EXPANDER PARA AUDITAR DE DÓNDE SALEN LOS GASTOS PENDIENTES ---
   with st.expander("🔍 Ver de dónde salen estos Gastos Pendientes (Detalle)"):
       df_fijos_gast_pend = df_fijos_pendientes[df_fijos_pendientes["tipo_general"] == "Gasto"] if not df_fijos_pendientes.empty else pd.DataFrame()
       if not df_fijos_gast_pend.empty:
@@ -553,7 +641,6 @@ with tab1:
 
   st.markdown("---")
   
-  # --- COMPOSICIÓN GRÁFICA (USANDO DATOS REALES + FUTUROS PROYECTADOS) ---
   if not df_mes_trans.empty and not df_fijos_pendientes.empty:
     df_mes_combinado = pd.concat([df_mes_trans, df_fijos_pendientes], ignore_index=True)
   elif not df_mes_trans.empty:
@@ -642,9 +729,6 @@ with tab2:
       key="tab2_sub_option",
   )
 
-  # -----------------------------------------------
-  # OPCIÓN A: REGISTRAR UN PAGO / MOVIMIENTO PUNTUAL
-  # -----------------------------------------------
   if "Pago / Movimiento Puntual" in sub_tab2:
     st.subheader("💸 Registrar Transacción Realizada")
     st.caption("Guarda el movimiento efectuado en la fecha seleccionada.")
@@ -735,9 +819,6 @@ with tab2:
         else:
           st.warning("El monto debe ser mayor a 0.")
 
-  # -----------------------------------------------
-  # OPCIÓN B: CONFIGURAR REGLA FIJA RECURRENTE (Con Frecuencia)
-  # -----------------------------------------------
   elif "Ingreso Fijo" in sub_tab2:
     st.subheader("📅 Configurar Regla Fija Recurrente")
     st.caption(
@@ -813,7 +894,7 @@ with tab2:
         )
         
     r_desc = st.text_input(
-        "Descripción (Ej: Alquiler, Internet, Patente Corsa)", key="tab2_r_desc"
+        "Descripción (Ej: Alquiler, Internet, Pa)", key="tab2_r_desc"
     )
 
     if st.button(
@@ -847,9 +928,7 @@ with tab2:
               "descripcion": r_desc,
               "frecuencia_meses": r_frec
           }).execute()
-          recargar_app(
-              f"Gasto configurado exitosamente."
-          )
+          recargar_app("Ingreso/Gasto fijo configurado exitosamente.")
         except Exception as e:
           st.error(f"Error al crear regla fija: {e}")
       else:
@@ -858,9 +937,6 @@ with tab2:
         else:
           st.warning("El monto debe ser mayor a 0.")
 
-  # -----------------------------------------------
-  # OPCIÓN C: PLAN DE FINANCIACIÓN EN CUOTAS
-  # -----------------------------------------------
   else:
     st.subheader("🚗 Configurar Gasto en Cuotas (Auto, Electrodomésticos, etc.)")
     st.caption(
@@ -1041,12 +1117,12 @@ with tab3:
         ].copy()
         if not df_pend.empty:
           def obtener_mes_cobro_def(row):
-              p_id = row["id"]
-              if p_id not in st.session_state.aaa_mes_cobro_custom:
-                  f_p = pd.to_datetime(row["fecha"]).date()
-                  f_cob = primer_viernes_mes_siguiente(f_p)
-                  st.session_state.aaa_mes_cobro_custom[p_id] = f"{f_cob.year}-{f_cob.month:02d}"
-              return st.session_state.aaa_mes_cobro_custom[p_id]
+              db_val = row.get("mes_cobro_custom")
+              if pd.notna(db_val) and str(db_val).strip() not in ["", "None", "nan"]:
+                  return str(db_val).strip()
+              f_p = pd.to_datetime(row["fecha"]).date()
+              f_cob = primer_viernes_mes_siguiente(f_p)
+              return f"{f_cob.year}-{f_cob.month:02d}"
 
           df_pend["Mes de Cobro (AAAA-MM)"] = df_pend.apply(obtener_mes_cobro_def, axis=1)
 
@@ -1068,12 +1144,15 @@ with tab3:
               key="tab3_editor_aaa",
           )
           
-          if st.button("💾 Guardar Asignación de Meses", key="tab3_btn_guardar_meses_aaa"):
-              for _, r_ed in editado.iterrows():
-                  p_id = r_ed["id"]
-                  nuevo_mes = str(r_ed["Mes de Cobro (AAAA-MM)"]).strip()
-                  st.session_state.aaa_mes_cobro_custom[p_id] = nuevo_mes
-              recargar_app("Meses de cobro actualizados correctamente.")
+          if st.button("💾 Guardar Asignación en la Nube", key="tab3_btn_guardar_meses_aaa"):
+              try:
+                  for _, r_ed in editado.iterrows():
+                      p_id = r_ed["id"]
+                      nuevo_mes = str(r_ed["Mes de Cobro (AAAA-MM)"]).strip()
+                      supabase.table("partidos_aaa").update({"mes_cobro_custom": nuevo_mes}).eq("id", p_id).execute()
+                  recargar_app("¡Meses de cobro guardados en Supabase correctamente!")
+              except Exception as e:
+                  st.error(f"Error al guardar en la nube: {e}")
 
           seleccionados = editado[editado["Incluir"] == True]
           bruto_calculado = seleccionados["monto"].sum()
@@ -1112,8 +1191,6 @@ with tab3:
                   supabase.table("partidos_aaa").update(
                       {"estado": "Cobrado"}
                   ).eq("id", p_id).execute()
-                  if p_id in st.session_state.aaa_mes_cobro_custom:
-                      del st.session_state.aaa_mes_cobro_custom[p_id]
 
                 recargar_app("Liquidación registrada.")
               except Exception as e:
@@ -1193,7 +1270,7 @@ with tab3:
           key="tab3_c_monto",
       )
 
-    st.info("💡 **Lógica automática:** La fecha de cobro se asigna automáticamente para el **día siguiente** a cada jornada laboral (ej: si trabajás el 4/9, figurará como cobrado a partir del 5/9). Los días futuros se mantendrán automáticamente como pendientes hasta que llegue su fecha.")
+    st.info("💡 **Lógica automática:** La fecha de cobro se asigna automáticamente para el **día siguiente** a cada jornada laboral. Los días futuros se mantendrán automáticamente como pendientes hasta que llegue su fecha.")
 
     if st.button("🔍 Generar Planilla de Turnos", key="tab3_btn_gen_cons"):
       cal = calendar.monthcalendar(c_anio, c_mes)
@@ -1260,7 +1337,7 @@ with tab4:
   sub_t4 = st.radio(
       "Sección:",
       [
-          "Vencimientos (Fijos + Eventuales)",
+          "Vencimientos & Ingresos Fijos",
           "🚗 Planes de Cuotas Activos",
           "Me deben / Debo (Cuentas Corrientes)",
           "Sobres / Metas de Ahorro",
@@ -1270,9 +1347,9 @@ with tab4:
   )
 
   # ------------------------------------
-  # 1. VENCIMIENTOS DINÁMICOS
+  # 1. VENCIMIENTOS & INGRESOS FIJOS
   # ------------------------------------
-  if "Vencimientos" in sub_t4:
+  if "Vencimientos & Ingresos Fijos" in sub_t4:
     col_v1, col_v2 = st.columns([1, 1.8])
     with col_v1:
       st.subheader("➕ Agregar Vencimiento Eventual")
@@ -1301,7 +1378,50 @@ with tab4:
           st.warning("Ingresá un concepto.")
 
     with col_v2:
-      st.subheader("🔔 Estado de Vencimientos de Gastos Fijos")
+      st.subheader("🟢 Estado de Ingresos Fijos (Ej: Pa, Sueldo)")
+      ingresos_fijos_info = calcular_ingresos_fijos_estado()
+
+      if ingresos_fijos_info:
+        for item in ingresos_fijos_info:
+          c_inf1, c_inf2 = st.columns([3, 1])
+          fecha_fmt = item["fecha_cobro"].strftime("%d/%m/%Y")
+          estado_cobro = item["estado_cobro"]
+
+          with c_inf1:
+            if estado_cobro == "Pendiente":
+              st.info(
+                  f"📥 **{item['categoria']}** ({item['descripcion']}):"
+                  f" **PENDIENTE DE COBRO** - Previsto el {fecha_fmt} -"
+                  f" ${item['monto']:,.0f}"
+              )
+            else:
+              st.success(
+                  f"✅ **{item['categoria']}** ({item['descripcion']}):"
+                  f" **COBRADO ESTE MES** (${item['monto']:,.0f})"
+              )
+
+          with c_inf2:
+            if estado_cobro == "Pendiente":
+              if st.button(
+                  "💳 Marcar Cobrado",
+                  key=f"cobrar_ing_{item['id_recurrente']}_{item['mes_año']}",
+              ):
+                try:
+                  supabase.table("transacciones").insert({
+                      "fecha": str(item["fecha_cobro"]),
+                      "tipo": "Ingreso Fijo",
+                      "categoria": item["categoria"],
+                      "monto": item["monto"],
+                      "descripcion": f"Cobro Fijo {item['mes_año']} - {item['descripcion']}",
+                  }).execute()
+                  recargar_app(f"Ingreso de {item['categoria']} marcado como cobrado.")
+                except Exception as e:
+                  st.error(f"Error al registrar cobro: {e}")
+      else:
+        st.info("No hay ingresos fijos configurados.")
+
+      st.markdown("---")
+      st.subheader("🔔 Estado de Gastos Fijos (Vencimientos)")
       fijos_info = calcular_vencimientos_fijos()
 
       if fijos_info:
@@ -1334,8 +1454,7 @@ with tab4:
             else:
               st.success(
                   f"✅ **{item['categoria']}** ({item['descripcion']}):"
-                  f" **PAGADO ESTE MES**. Próximo vencimiento: {fecha_fmt} (en"
-                  f" {dias} días) - ${item['monto']:,.0f}"
+                  f" **PAGADO ESTE MES**. Próximo: {fecha_fmt} - ${item['monto']:,.0f}"
               )
 
           with col_item2:
@@ -1367,87 +1486,18 @@ with tab4:
                         "fecha_fin": str(nueva_f_fin),
                     }).eq("id", item["id_recurrente"]).execute()
 
-                  recargar_app(
-                      f"Pago de {item['categoria']} registrado para"
-                      f" {item['mes_año']}."
-                  )
+                  recargar_app(f"Pago de {item['categoria']} registrado.")
                 except Exception as e:
                   st.error(f"Error al registrar pago: {e}")
       else:
         st.info("No hay gastos fijos configurados.")
 
-      st.markdown("---")
-      st.markdown("##### **Vencimientos Eventuales Registrados:**")
-      if not df_vencimientos.empty:
-        df_venc_edit = df_vencimientos[
-            ["id", "concepto", "fecha_vencimiento", "monto", "estado"]
-        ].copy()
-        df_venc_edit["fecha_vencimiento"] = df_venc_edit[
-            "fecha_vencimiento"
-        ].astype(str)
-
-        venc_editados = st.data_editor(
-            df_venc_edit,
-            column_config={
-                "id": st.column_config.NumberColumn("ID", disabled=True),
-                "concepto": st.column_config.TextColumn("Concepto"),
-                "fecha_vencimiento": st.column_config.TextColumn("Fecha Venc."),
-                "monto": st.column_config.NumberColumn(
-                    "Monto ($)", min_value=0.0, format="$%f"
-                ),
-                "estado": st.column_config.SelectboxColumn(
-                    "Estado", options=["Pendiente", "Pagado"]
-                ),
-            },
-            hide_index=True,
-            use_container_width=True,
-            key="tab4_editor_venc",
-        )
-
-        col_bv1, col_bv2 = st.columns(2)
-        with col_bv1:
-          if st.button(
-              "💾 Guardar Vencimientos Eventuales",
-              type="primary",
-              key="tab4_btn_update_venc",
-          ):
-            try:
-              for _, row in venc_editados.iterrows():
-                supabase.table("vencimientos").update({
-                    "concepto": str(row["concepto"]),
-                    "fecha_vencimiento": str(row["fecha_vencimiento"]),
-                    "monto": float(row["monto"]),
-                    "estado": str(row["estado"]),
-                }).eq("id", row["id"]).execute()
-              recargar_app("Vencimientos actualizados.")
-            except Exception as e:
-              st.error(f"Error: {e}")
-
-        with col_bv2:
-          id_del_venc = st.number_input(
-              "ID a Eliminar", min_value=0, step=1, key="tab4_id_del_venc"
-          )
-          if st.button("🗑️ Eliminar Vencimiento", key="tab4_btn_del_venc"):
-            if id_del_venc in df_vencimientos["id"].values:
-              try:
-                supabase.table("vencimientos").delete().eq(
-                    "id", id_del_venc
-                ).execute()
-                recargar_app("Eliminado.")
-              except Exception as e:
-                st.error("Error al eliminar.")
-      else:
-        st.info("No hay vencimientos eventuales cargados.")
-
   # ------------------------------------
-  # 2. PLANES DE CUOTAS ACTIVOS (EDITABLE EN DIRECTO)
+  # 2. PLANES DE CUOTAS ACTIVOS
   # ------------------------------------
   elif "Planes de Cuotas" in sub_t4:
     st.subheader("🚗 Planes de Financiación en Cuotas Activos")
-    st.info(
-        "✏️ **Planilla Editable:** Podés cambiar directamente el **Monto de la Cuota** si te aplicaron intereses. "
-        "✅ Al cambiarlo acá, los recibos viejos del Historial no se modifican, pero las cuotas restantes empezarán a usar este valor."
-    )
+    st.info("✏️ **Planilla Editable:** Podés cambiar directamente el **Monto de la Cuota** si te aplicaron intereses.")
 
     if not df_recurrentes.empty and "cuotas_totales" in df_recurrentes.columns:
       df_cuotas = df_recurrentes[
@@ -1536,31 +1586,6 @@ with tab4:
                 recargar_app("Plan de cuotas eliminado.")
               except Exception as e:
                 st.error("Error al eliminar plan.")
-
-        st.warning("⚠️ **ATENCIÓN:** Si tocaste el botón rojo de *Eliminar Plan de Cuotas* porque te habías equivocado al cargarlo, recordá ir también a la pestaña **📝 Historial** para borrar el recibo del pago, así no te suma dinero fantasma en tu total del mes.")
-
-        st.markdown("---")
-        st.markdown("##### 📊 **Tarjetas de Avance Visual:**")
-        for _, row in df_cuotas.iterrows():
-          c_tot = int(row["cuotas_totales"])
-          c_pag = int(row["cuotas_pagadas"]) if pd.notna(row["cuotas_pagadas"]) else 0
-          c_rest = max(0, c_tot - c_pag)
-          monto_c = float(row["monto"])
-          saldo_pend = c_rest * monto_c
-          progreso = min(1.0, c_pag / c_tot) if c_tot > 0 else 1.0
-
-          f_fin_str = (
-              str(row["fecha_fin"])
-              if pd.notna(row.get("fecha_fin"))
-              else "No definida"
-          )
-
-          st.markdown(
-              f"**{row['categoria']}** - {row.get('descripcion', 'Plan')}:"
-              f" Cuota **${monto_c:,.2f}** ({c_pag}/{c_tot} cuotas pagadas) -"
-              f" Pendiente **${saldo_pend:,.2f}** (Finaliza: {f_fin_str})"
-          )
-          st.progress(progreso)
       else:
         st.info("No hay planes de cuotas activos configurados.")
     else:
@@ -1808,7 +1833,6 @@ with tab5:
 
     st.markdown("---")
     st.subheader("🗑️ Eliminar Movimiento del Historial")
-    st.info("💡 **Solución para Gastos Fantasmas:** Si en tu panel aparece un monto de más porque marcaste un gasto fijo como pagado por error, buscalo en esta lista y **borralo**. El dinero total se va a descontar automáticamente.")
     
     opciones_borrar = {
         int(row["id"]): (
@@ -1854,10 +1878,6 @@ with tab6:
 
   with col_t6_a:
     st.subheader("✏️ Planilla Editable de Fijos y Planes de Cuotas")
-    st.caption(
-        "Podés modificar montos, días de vencimiento, descripciones o cuotas y"
-        " hacer clic en guardar."
-    )
 
     if not df_recurrentes.empty:
       df_rec_full = df_recurrentes.copy()
@@ -1990,9 +2010,6 @@ with tab6:
               recargar_app(f"Registro ID {id_del_rec_t6} eliminado.")
             except Exception as e:
               st.error("Error al eliminar.")
-              
-      st.warning("⚠️ Recuerda que si tocaste *Eliminar Fijo/Cuota* también deberás ir a la pestaña **📝 Historial** para borrar el comprobante real de pago si es que ya lo habías marcado como pagado por error.")
-
     else:
       st.info("No hay movimientos fijos ni cuotas configurados aún.")
 
