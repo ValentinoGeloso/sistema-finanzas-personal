@@ -400,20 +400,21 @@ with tab1:
   if not df_deudas.empty and "mes_año" in df_deudas.columns:
     cobrar_pend_mes = df_deudas[(df_deudas["mes_año"] == mes_seleccionado) & (df_deudas["tipo"] == "Me deben") & (df_deudas["estado"] == "Pendiente")]["monto"].sum()
 
-  # CÁLCULO DE AAA PENDIENTE USANDO LA CONFIGURACIÓN MANUAL O ESTÁNDAR
+  # CÁLCULO DE AAA PENDIENTE USANDO FECHA PREDETERMINADA (PRIMER VIERNES DEL MES SIGUIENTE)
   aaa_pend = 0.0
   df_aaa_este_mes = pd.DataFrame()
   if not df_partidos_aaa.empty and "estado" in df_partidos_aaa.columns:
       df_aaa_pend = df_partidos_aaa[df_partidos_aaa["estado"] == "Pendiente"].copy()
       if not df_aaa_pend.empty:
+          for _, r_aaa in df_aaa_pend.iterrows():
+              p_id = r_aaa["id"]
+              if p_id not in st.session_state.aaa_mes_cobro_custom:
+                  f_partido = pd.to_datetime(r_aaa["fecha"]).date()
+                  f_cobro_def = primer_viernes_mes_siguiente(f_partido)
+                  st.session_state.aaa_mes_cobro_custom[p_id] = f"{f_cobro_def.year}-{f_cobro_def.month:02d}"
+
           def calcular_mes_cobro_aaa(row):
-              p_id = row["id"]
-              if p_id in st.session_state.aaa_mes_cobro_custom:
-                  return st.session_state.aaa_mes_cobro_custom[p_id]
-              
-              f_partido = pd.to_datetime(row["fecha"]).date()
-              f_cobro = primer_viernes_mes_siguiente(f_partido)
-              return f"{f_cobro.year}-{f_cobro.month:02d}"
+              return st.session_state.aaa_mes_cobro_custom.get(row["id"])
           
           df_aaa_pend["mes_cobro_estimado"] = df_aaa_pend.apply(calcular_mes_cobro_aaa, axis=1)
           df_aaa_este_mes = df_aaa_pend[df_aaa_pend["mes_cobro_estimado"] == mes_seleccionado]
@@ -477,6 +478,31 @@ with tab1:
   c_g1.metric("Gastos (Pagados)", f"${gastos_reales:,.2f}")
   c_g2.metric("Gastos Pendientes (A pagar)", f"${gastos_pendientes:,.2f}", help="Suma de fijos pendientes, cuotas, deudas y vencimientos eventuales.")
   c_g3.metric("Total Proyección Gastos", f"${proyeccion_gastos:,.2f}")
+
+  # --- EXPANDER PARA AUDITAR DE DÓNDE SALEN LOS GASTOS PENDIENTES ---
+  with st.expander("🔍 Ver de dónde salen estos Gastos Pendientes (Detalle)"):
+      df_fijos_gast_pend = df_fijos_pendientes[df_fijos_pendientes["tipo_general"] == "Gasto"] if not df_fijos_pendientes.empty else pd.DataFrame()
+      if not df_fijos_gast_pend.empty:
+          st.markdown("##### 📅 Gastos Fijos / Recurrentes Pendientes:")
+          st.dataframe(df_fijos_gast_pend[["categoria", "descripcion", "monto"]], hide_index=True, use_container_width=True)
+      
+      df_debo_mes = pd.DataFrame()
+      if not df_deudas.empty and "mes_año" in df_deudas.columns:
+          df_debo_mes = df_deudas[(df_deudas["mes_año"] == mes_seleccionado) & (df_deudas["tipo"] == "Debo") & (df_deudas["estado"] == "Pendiente")]
+      if not df_debo_mes.empty:
+          st.markdown("##### 💳 Cuentas por Pagar ('Debo'):")
+          st.dataframe(df_debo_mes[["persona", "detalle", "monto"]], hide_index=True, use_container_width=True)
+
+      df_venc_mes = pd.DataFrame()
+      if not df_vencimientos.empty and "estado" in df_vencimientos.columns:
+          mes_año_v = pd.to_datetime(df_vencimientos["fecha_vencimiento"]).dt.strftime("%Y-%m")
+          df_venc_mes = df_vencimientos[(mes_año_v == mes_seleccionado) & (df_vencimientos["estado"] == "Pendiente")]
+      if not df_venc_mes.empty:
+          st.markdown("##### 🔔 Vencimientos Eventuales Pendientes:")
+          st.dataframe(df_venc_mes[["concepto", "fecha_vencimiento", "monto"]], hide_index=True, use_container_width=True)
+
+      if df_fijos_gast_pend.empty and df_debo_mes.empty and df_venc_mes.empty:
+          st.info("No hay gastos pendientes registrados para este mes.")
 
   st.markdown("---")
   st.markdown("### 💎 3. Proyección Total (Saldo Final)")
@@ -978,18 +1004,17 @@ with tab3:
             df_partidos_aaa["estado"] == "Pendiente"
         ].copy()
         if not df_pend.empty:
-          # Asignar mes de cobro actual (por defecto mes siguiente o el guardado en session_state)
           def obtener_mes_cobro_def(row):
               p_id = row["id"]
-              if p_id in st.session_state.aaa_mes_cobro_custom:
-                  return st.session_state.aaa_mes_cobro_custom[p_id]
-              f_p = pd.to_datetime(row["fecha"]).date()
-              f_cob = primer_viernes_mes_siguiente(f_p)
-              return f"{f_cob.year}-{f_cob.month:02d}"
+              if p_id not in st.session_state.aaa_mes_cobro_custom:
+                  f_p = pd.to_datetime(row["fecha"]).date()
+                  f_cob = primer_viernes_mes_siguiente(f_p)
+                  st.session_state.aaa_mes_cobro_custom[p_id] = f"{f_cob.year}-{f_cob.month:02d}"
+              return st.session_state.aaa_mes_cobro_custom[p_id]
 
           df_pend["Mes de Cobro (AAAA-MM)"] = df_pend.apply(obtener_mes_cobro_def, axis=1)
 
-          st.write("Seleccioná los partidos que querés incluir en el cobro y **modificá el mes de cobro** si querés pasarlo de mes (ej: de septiembre a octubre):")
+          st.write("Seleccioná los partidos que querés incluir en el cobro y **modificá el mes de cobro** si querés pasarlo de mes:")
           df_pend["Incluir"] = True
           df_pend_view = df_pend[["Incluir", "id", "fecha", "detalle", "monto", "Mes de Cobro (AAAA-MM)"]]
           
@@ -1105,7 +1130,7 @@ with tab3:
           }).execute()
           recargar_app("Ingreso Argenliga registrado.")
         except Exception as e:
-          st.error(f"Error al registrar.")
+          st.error("Error al registrar.")
 
   elif "Consultorio" in modo_trabajo:
     st.subheader("Generador de Turnos Consultorio")
